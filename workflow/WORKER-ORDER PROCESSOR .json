@@ -1,0 +1,1313 @@
+{
+  "name": "WORKER-ORDER PROCESSOR",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// 1. Grab the clean data for THIS SPECIFIC ITEM (Since it runs once per item)\nconst data = $input.item.json;\n\n// 2. DYNAMIC SUPPLIER LOGIC\nconst isVillaGuelfa = (data.supplier_name || '').toUpperCase().includes('GUELFA');\nconst fornitoreName = isVillaGuelfa ? 'VILLA GUELFA S.R.L.' : 'DRINK INTERNATIONAL SPA';\nconst fornitorePiva = isVillaGuelfa ? '02537910040' : 'IT00926410010';\n\n// 3. CREATE A UNIQUE FILE NAME (Adds a timestamp to prevent overwriting!)\nlet rawCustomer = data.customer_name || 'Ordine_Fornitore';\nlet cleanCustomer = rawCustomer.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();\nlet orderSuffix = data.order_number \n    ? String(data.order_number).replace(/[^a-zA-Z0-9]/g, '') \n    : new Date().getTime() + \"_\" + Math.floor(Math.random() * 1000);\n    \nlet safeFilename = `${cleanCustomer}_${orderSuffix}.pdf`;\n\n// 4. PRE-CALCULATE TOTALS & BUILD TABLE ROWS\nlet totalQty = 0;\nlet totalImporto = 0;\nlet itemsHtml = '';\n\nconst itemsList = data.items || [];\n\nif (itemsList.length === 0) {\n    itemsHtml = `<tr><td colspan=\"9\" style=\"text-align:center; padding:20px; background-color:#FFF2CC; color:red;\">Nessun articolo trovato.</td></tr>`;\n} else {\n    itemsList.forEach((lineItem, index) => {\n        let safeQty = parseFloat(lineItem.qty) || 0;\n        let safePrice = parseFloat(String(lineItem.unit_price || lineItem.price || 0).replace(',', '.')) || 0;\n        let calculatedNet = safeQty * safePrice;\n        let discountText = '';\n        \n        // --- NEW BULLETPROOF DISCOUNT FORMATTER & MATH LOGIC ---\n        if (lineItem.discount !== null && lineItem.discount !== undefined && lineItem.discount !== \"\") {\n            let rawDiscount = lineItem.discount;\n            let discountArrayForMath = [];\n\n            // 1. Normalize whatever input we got into a clean array\n            if (Array.isArray(rawDiscount)) {\n                discountArrayForMath = rawDiscount.map(String);\n            } else if (typeof rawDiscount === 'string' && rawDiscount.includes('+')) {\n                discountArrayForMath = rawDiscount.split('+').map(p => p.trim());\n            } else if (typeof rawDiscount === 'number') {\n                if (rawDiscount > 0 && rawDiscount < 1) {\n                    discountArrayForMath = [(rawDiscount * 100).toFixed(0) + \"%\"];\n                } else {\n                    discountArrayForMath = [rawDiscount.toString()];\n                }\n            } else {\n                discountArrayForMath = [String(rawDiscount).trim()];\n            }\n\n            // 2. Format the text AND calculate the net price simultaneously\n            let formattedParts = [];\n            for (let part of discountArrayForMath) {\n                // Formatting for the HTML table\n                let cleanPart = part.replace(/\\s/g, '').replace(/,/g, '.');\n                if (cleanPart !== \"\") {\n                    let formattedPart = cleanPart.includes('%') ? cleanPart : cleanPart + '%';\n                    formattedParts.push(formattedPart);\n                    \n                    // Math for the net price\n                    let pct = parseFloat(cleanPart.replace('%', ''));\n                    if (!isNaN(pct) && pct > 0) {\n                        calculatedNet = calculatedNet * (1 - (pct / 100));\n                    }\n                }\n            }\n            discountText = formattedParts.join(\" + \");\n        }\n        // --- END DISCOUNT LOGIC ---\n\n        totalQty += safeQty;\n        totalImporto += calculatedNet;\n\n        itemsHtml += `\n        <tr>\n            <td class=\"bg-light-blue center\" style=\"font-weight:bold; color:#203764;\">${index + 1}</td>\n            <td class=\"bg-light-blue center\">${lineItem.supplier_code || ''}</td>\n            <td class=\"bg-light-blue center\">${lineItem.item_code || lineItem.code || ''}</td>\n            <td class=\"bg-yellow left\">${lineItem.desc || ''}</td>\n            <td class=\"bg-yellow center\">${lineItem.um || 'PZ'}</td>\n            <td class=\"bg-yellow center\">${safeQty}</td>\n            <td class=\"bg-yellow right\">€ ${safePrice.toFixed(2)}</td>\n            <td class=\"bg-yellow center\">${discountText}</td>\n            <td class=\"bg-light-blue right\">€ ${calculatedNet.toFixed(2)}</td>\n        </tr>\n        `;\n    });\n}\n\n// 4.5. BUILD THE NOTES BOX (Only shows if note_ordine exists!)\nlet noteHtml = '';\nif (data.note_ordine && data.note_ordine.trim() !== '' && data.note_ordine !== 'null') {\n    noteHtml = `\n    <div style=\"margin-top: 30px; border: 2px solid #D83B01; background-color: #FFF4CE; padding: 10px;\">\n        <div style=\"font-weight: bold; color: #D83B01; font-size: 11pt; margin-bottom: 5px;\">🚨 NOTE / COMUNICAZIONI EMAIL:</div>\n        <div style=\"font-size: 9.5pt; color: #000; white-space: pre-wrap;\">${data.note_ordine}</div>\n    </div>\n    `;\n}\n\n// 5. BUILD THE TEMPLATE\nconst html = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <style>\n    @page { size: A4 landscape; margin: 10mm; background-color: #ffffff; }\n    body { font-family: Arial, sans-serif; font-size: 8.5pt; margin: 0; padding: 0; color: #000; }\n    .bg-dark-blue { background-color: #203764; color: white; }\n    .bg-mid-blue { background-color: #305496; color: white; }\n    .bg-yellow { background-color: #FFF2CC; border: 1px solid #E6C800 !important; }\n    .bg-light-blue { background-color: #DDEEFF; border: 1px solid #9DC3E6 !important; color: #203764; }\n    .bg-white { background-color: #FFFFFF; border: 1px solid #B7B7B7 !important; }\n    .header-banner { text-align: center; padding: 6px; font-size: 14pt; font-weight: bold; }\n    .sub-banner { text-align: center; padding: 4px; font-size: 9pt; margin-bottom: 15px; }\n    table { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 10px; }\n    td { padding: 4px; vertical-align: middle; border: 1px solid #ffffff; }\n    .label-cell { text-align: right; font-weight: bold; color: #203764; width: 15%; padding-right: 8px; }\n    .input-cell { width: 35%; height: 20px; font-weight: bold; padding-left: 5px; }\n    .items-table { width: 100%; border-collapse: collapse; margin-top: 5px; }\n    .items-table th { background-color: #203764; color: white; font-weight: bold; padding: 6px; text-align: center; border: 1px solid #ffffff;}\n    .items-table td { border: 1px solid #D0D8E8; padding: 5px; }\n    .center { text-align: center; }\n    .left { text-align: left; }\n    .right { text-align: right; }\n  </style>\n</head>\n<body>\n    <div class=\"bg-dark-blue header-banner\">${fornitoreName} — ORDINE FORNITORE</div>\n    <div class=\"bg-mid-blue sub-banner\">Generato Automaticamente (Estrazione AI)</div>\n    <table>\n        <tr>\n            <td class=\"label-cell\">N. DOCUMENTO:</td>\n            <td class=\"input-cell bg-yellow\">${data.order_number || ''}</td>\n            <td class=\"label-cell\">NOME CLIENTE:</td>\n            <td class=\"input-cell bg-yellow\" style=\"color: #000;\">${data.customer_name || ''}</td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\">DATA EMISSIONE:</td>\n            <td class=\"input-cell bg-yellow\">${data.issue_date || ''}</td>\n            <td class=\"label-cell\">P.IVA:</td>\n            <td class=\"input-cell bg-light-blue\">${data.piva_cliente || ''}</td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\">DATA CONSEGNA:</td>\n            <td class=\"input-cell bg-yellow\">${data.delivery_date || ''}</td>\n            <td class=\"label-cell\">CODE:</td>\n            <td class=\"input-cell bg-light-blue\"></td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\">DESTINAZIONE:</td>\n            <td class=\"input-cell bg-yellow\">${data.destination || ''}</td>\n            <td class=\"label-cell\">INDIRIZZO:</td>\n            <td class=\"input-cell bg-light-blue\"></td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\">NOTE ORDINE:</td>\n            <td class=\"input-cell bg-yellow\">${data.special_instructions || ''}</td>\n            <td class=\"label-cell\">TELEFONO:</td>\n            <td class=\"input-cell bg-light-blue\">${data.phone || ''}</td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\"></td>\n            <td class=\"input-cell\"></td>\n            <td class=\"label-cell\">EMAIL:</td>\n            <td class=\"input-cell bg-light-blue\">${data.email || ''}</td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\"></td>\n            <td class=\"input-cell\"></td>\n            <td class=\"label-cell\">FAX:</td>\n            <td class=\"input-cell bg-light-blue\">${data.fax || ''}</td>\n        </tr>\n    </table>\n    <table>\n        <tr>\n            <td class=\"label-cell\">COND. PAGAMENTO:</td>\n            <td class=\"input-cell bg-light-blue\">${data.payment_terms || ''}</td>\n            <td class=\"label-cell\">LISTINO / SCONTO:</td>\n            <td class=\"input-cell bg-light-blue\">${data.discount || ''}</td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\"></td>\n            <td class=\"input-cell\"></td>\n            <td class=\"label-cell\">FORNITORE:</td>\n            <td class=\"input-cell bg-white\" style=\"color: #000;\">${fornitoreName}</td>\n        </tr>\n        <tr>\n            <td class=\"label-cell\"></td>\n            <td class=\"input-cell\"></td>\n            <td class=\"label-cell\">P.IVA FORN.:</td>\n            <td class=\"input-cell bg-white\" style=\"color: #000;\">${fornitorePiva}</td>\n        </tr>\n    </table>\n    <table>\n        <tr>\n            <td class=\"label-cell\">TOTALE QUANTITÀ:</td>\n            <td class=\"input-cell bg-light-blue center\">${totalQty}</td>\n            <td class=\"label-cell\">TOTALE IMPORTO:</td>\n            <td class=\"input-cell bg-light-blue center\">€ ${totalImporto.toFixed(2)}</td>\n        </tr>\n    </table>\n    <table class=\"items-table\">\n        <thead>\n            <tr>\n                <th style=\"width: 3%;\">#</th>\n                <th style=\"width: 14%;\">CODICE FORNITORE</th>\n                <th style=\"width: 14%;\">CODICE ARTICOLO</th>\n                <th style=\"width: 32%;\">DESCRIZIONE</th>\n                <th style=\"width: 4%;\">U.M.</th>\n                <th style=\"width: 6%;\">QTÀ</th>\n                <th style=\"width: 10%;\">PREZZO LORDO €</th>\n                <th style=\"width: 7%;\">SCONTO %</th>\n                <th style=\"width: 10%;\">IMPORTO NETTO €</th>\n            </tr>\n        </thead>\n        <tbody>\n            ${itemsHtml}\n        </tbody>\n    </table>\n    \n    ${noteHtml}\n\n</body>\n</html>`;\n\n// 6. OUTPUT THIS SINGLE ITEM TO RAILWAY\nconst binaryData = Buffer.from(html, 'utf8').toString('base64');\n\nreturn {\n  json: { \n    orderData: data,\n    pdfFileName: safeFilename\n  },\n  binary: {\n    \"index.html\": {\n      data: binaryData,\n      mimeType: \"text/html\",\n      fileName: \"index.html\"\n    }\n  }\n};"
+      },
+      "id": "68f36870-40fc-44ce-970a-758651c13a04",
+      "name": "Build HTML Document",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1488,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://regalidea-pdf-server-production.up.railway.app/forms/chromium/convert/html",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Gotenberg-Output-Filename",
+              "value": "={{ $json.pdfFileName }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "index.html"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1184,
+        304
+      ],
+      "id": "d7acc275-f6bb-4616-8d85-b221c54b2187",
+      "name": "RAILWAY-PDF"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ Object.values($binary)[0].mimeType }}",
+                    "rightValue": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "a4e6de1b-0230-4f79-9f0a-d42557d31838"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Excel XLSX"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ Object.values($binary)[0].mimeType }}",
+                    "rightValue": "application/vnd.ms-excel",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "511ef417-0d41-426c-871d-4dc25df7e575"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Excel XLS"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "82f92d01-e0fb-4a59-b575-eb357da7d5db",
+                    "leftValue": "={{ Object.values($binary)[0].mimeType }}",
+                    "rightValue": "application/vnd.oasis.opendocument.spreadsheet",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ODS"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ Object.values($binary)[0].mimeType }}",
+                    "rightValue": "application/pdf",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "1eded4a9-1e59-4c8e-99d1-c00f21856d6e"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "PDF"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ Object.values($binary)[0].mimeType }}",
+                    "rightValue": "image/",
+                    "operator": {
+                      "type": "string",
+                      "operation": "startsWith"
+                    },
+                    "id": "ef863c8e-2a41-46f0-82be-9e62e0406470"
+                  }
+                ],
+                "combinator": "or"
+              },
+              "renameOutput": true,
+              "outputKey": "Image"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "705d84aa-b010-4c48-ae0c-35148fe8821e",
+                    "leftValue": "={{ $binary[Object.keys($binary)[0]].mimeType.includes('wordprocessing') }}",
+                    "rightValue": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DOC"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Other"
+        }
+      },
+      "id": "cf81af69-0294-40c4-a0d4-1fd43ed31172",
+      "name": "Route by File Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -3104,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        -2736,
+        832
+      ],
+      "id": "3a6f2bc1-0727-49b4-9c99-a7fd9a421b80",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "iM1P3NuKsi4hAoen",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ Object.values($input.item.binary ?? {}).some(f => \n  !['image/jpeg','image/png','image/gif',\n    'image/webp','image/jpg'].includes(f.mimeType)\n) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "id": "be2accda-9a77-4d06-bd95-4136a44c98ad"
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "5992d45c-3700-4754-ba64-572c299d3436",
+      "name": "Check if Attachment Exists",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -3632,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "lista_file",
+        "options": {
+          "includeBinaries": true
+        }
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        -544,
+        304
+      ],
+      "id": "6a14647f-a557-45f3-9bdb-42018a1ed33e",
+      "name": "Aggregate"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "maxResults": 1,
+        "filters": {
+          "q": "subject:(\"ordine-buse\" OR \"drink excel modello\")",
+          "readStatus": "unread",
+          "sender": "busetasdemir174@gmail.com"
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "id": "0e0f0530-6d0f-4336-b50a-55bd71b76d23",
+      "name": "New Email with Attachment",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -3824,
+        640
+      ],
+      "executeOnce": false,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Z1pOLQzIMIo3NzIf",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "={{ $binary.data.fileName }}",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "13eMtznVrkXPfKiX4IF5uVDIQGpxqzQED",
+          "mode": "list",
+          "cachedResultName": "ORDINE-BUSE",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/13eMtznVrkXPfKiX4IF5uVDIQGpxqzQED"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -752,
+        304
+      ],
+      "id": "8c48d663-10c4-4bbe-b0e3-66c2ad2473a6",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "I7QLq4blNp1E4jnv",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $('New Email with Attachment').item.json.id }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -320,
+        304
+      ],
+      "id": "d16b070e-4e8e-4f6a-820a-e463b62c4808",
+      "name": "Mark a message as read",
+      "webhookId": "0e506d7f-687d-491a-9ece-0a279795e405",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Z1pOLQzIMIo3NzIf",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "$binary",
+        "include": "allOtherFields",
+        "options": {
+          "includeBinary": true
+        }
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -3456,
+        464
+      ],
+      "id": "152926e0-fb51-42b2-9f37-519f8a87d51d",
+      "name": "Separate Multiple Files",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "$binary",
+        "include": "allOtherFields",
+        "options": {
+          "includeBinary": true
+        }
+      },
+      "id": "48863fe5-6987-4ce2-8abf-68ec0a1c8353",
+      "name": "Iterate Each File",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -3296,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "950981fe-547a-4336-8e48-f84858954310",
+              "leftValue": "={{ $json.textPlain || $json.text || $json.snippet }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -3312,
+        656
+      ],
+      "id": "b6b71646-9212-4799-84c6-4ed508d5c3b0",
+      "name": "Is Body-Only Order"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -3104,
+        752
+      ],
+      "id": "8477531a-1a27-443d-be67-1dbbfece2c13",
+      "name": "Discard: No Order Found"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -3104,
+        544
+      ],
+      "id": "047f0be4-e1aa-4dfd-a566-4e104be92d99",
+      "name": "Discard: Unsupported File"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://gotenberg-production-c6df.up.railway.app/forms/libreoffice/convert",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "={{ Object.keys($binary)[0] }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "=data"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2704,
+        368
+      ],
+      "id": "fb54056a-d4b8-4920-a1e5-15b24d0a2a11",
+      "name": "Gotenberg: Convert DOCX to PDF"
+    },
+    {
+      "parameters": {
+        "resource": "document",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "text": "==== OGGETTO EMAIL ===\n{{ $('New Email with Attachment').item.json.subject }}\n\n=== CORPO EMAIL ===\n{{ $('New Email with Attachment').item.json.textPlain || $('New Email with Attachment').item.json.text }}\n\n=== REGOLE DI ESTRAZIONE ===\n\n=== REGOLA 0 — CHI E IL FORNITORE E CHI E IL CLIENTE ===\nQuesto documento e un ORDINE DI ACQUISTO.\nLa parola \"Spett.le\" introduce il FORNITORE (chi riceve l'ordine).\nIl CLIENTE e l'azienda che ha emesso l'ordine con i propri dati fiscali.\nNON confondere mai i due ruoli.\n\n=== REGOLA 1 — DESTINAZIONE ===\nCerca ESPLICITAMENTE la sezione \"Destinazione merce\" nel documento.\nL'indirizzo sotto \"Destinazione merce\" e SEMPRE quello corretto.\nIGNORA COMPLETAMENTE l'indirizzo del fornitore dopo \"Spett.le\".\nIGNORA sede legale, fatturazione, mittente.\nAltre etichette valide: Luogo di consegna, Indirizzo di spedizione, Resa, consegnare a, spedire a, c/o, Magazzino.\n\"destination\" deve essere SEMPRE una stringa semplice su una riga.\nSe non trovi un indirizzo ESPLICITO scrivi null. MAI inventare.\n\n=== REGOLA 2 — CODICI PRODOTTO ===\nSE \"supplier_name\" contiene VILLA GUELFA:\n- \"supplier_code\" = codice numerico che inizia con 2 e ha 4 O 5 cifre. (Esempi: 2501, 2518, 25325, 25333). NON aggiungere cifre extra. NON concatenare con UM o quantita.\n- \"item_code\" = qualsiasi altro codice prodotto, altrimenti lascia vuoto.\nSE \"supplier_name\" contiene REGALIDEA O altro fornitore:\n- \"supplier_code\" = codice di 5-7 cifre che inizia con 60 (es. 6012018).\n- \"item_code\" = qualsiasi altro codice prodotto presente.\nMAI inserire EAN 12-13 cifre in qualsiasi campo codice. MAI invertire supplier_code e item_code.\n\n=== REGOLA 3 — RIGHE PRODOTTO ===\nEstrai OGNI riga prodotto senza eccezioni. \"items\" NON deve mai essere vuoto se ci sono prodotti.\n\"qty\" e il valore nella colonna Quantita, NON \"Qta x conf\" o \"Num conf\".\nSe il PDF non ha prezzi: price=0, net=0, discount=[]. NON inventare prezzi.\nIgnora righe IVA che iniziano con 999.\nUn prodotto va estratto SOLO se hai codice, descrizione e quantita chiari. Se la quantita e un trattino o vuota, ESCLUDI completamente la riga.\nATTENZIONE QUANTITÀ NEL TESTO: Se la quantita e scritta all'inizio della descrizione (es. \"N.85 CESTO\" oppure \"85 pz CESTO\"), DEVI separarla! Estrai \"85\" nel campo \"qty\", e lascia \"CESTO\" nel campo \"desc\". Non inserire MAI \"N.85\" nella descrizione.\n\n=== REGOLA 4 — PREZZI E FORMATI NUMERICI ===\nConverti SEMPRE i decimali usando il PUNTO al posto della virgola (es. 12,50 diventa 12.50).\nQuesto vale per prezzi, netti e sconti.\nSe il documento non ha prezzi, tutti i campi prezzo = 0. NON trasformare numeri isolati in quantita.\n\n=== REGOLA 5 — ORDINI MULTIPLI ===\nSe trovi date di consegna diverse O destinazioni diverse, crea oggetti SEPARATI nell'array \"orders\".\nNon unire mai articoli con date o destinazioni diverse.\n\n=== REGOLA 6 — DATI DAL CORPO EMAIL ===\nIl PDF e la fonte primaria. L'email e la fonte secondaria.\nInfo supplementari dall'email vanno in \"note_ordine\".\n\n=== REGOLA 7 — CAMPI OBBLIGATORI ===\n\"order_number\": cerca Ordine N., Riferimento, Numero documento. MAI usare l'oggetto email come order_number. Se assente, usa null.\n\"issue_date\" e \"delivery_date\": formato GG/MM/AAAA.\n\"CONSEGNA MASSIMA\" o \"CONSEGNA ENTRO\" indica la delivery_date. Date testuali (es. 24 NOVEMBRE) vanno convertite in GG/MM/AAAA.\n\n=== REGOLA 8 — NOTE, EMAIL E CONTENUTO CESTI ===\nIl corpo dell'email o le note del PDF possono contenere info su merce stralciata o note di credito.\nELENCO PRODOTTI NEI CESTI (CRITICO): Questa regola sovrascrive la Regola 3. Se un cesto natalizio ha un elenco di prodotti al suo interno (\"Panettone... Spumante...\"), NON estrarre quei prodotti come righe items separate. L'intero contenuto del cesto DEVE essere spostato e salvato come testo descrittivo nel campo \"note_ordine\".\nSe non ci sono note rilevanti, lascia stringa vuota \"\".\n\n=== REGOLA 9 — DIVIETO DI ALLUCINAZIONE ===\nNON inventare MAI un valore. NON usare dati da altri documenti.\nSe non trovi un campo scrivi null. Un campo null e SEMPRE meglio di dati sbagliati.\n\n=== REGOLA 10 — SCONTI A COLONNE MULTIPLE ===\nAlcuni documenti hanno sconti divisi in colonne (Sc.1%, Sc.2%, Sconto1...).\n- NON concatenare mai i valori in un unico numero (es. NON fare \"10.3\").\n- Leggi ogni colonna separatamente. \"discount\" e un ARRAY di stringhe.\n- Includi SOLO i valori maggiori di zero.\n- Usa SEMPRE il punto per i decimali, e ometti i decimali se sono .00.\nEsempi corretti:\n- Sc.1%=10,00 Sc.2%=3,00 -> discount = [\"10%\", \"3%\"]\n- Sc.1%=10,50 Sc.2%=3,00 -> discount = [\"10.50%\", \"3%\"]\n- Sc.1%=0,00 -> discount = []\n\n=== REGOLA 11 — SCONTI E ARTICOLI DAL CORPO EMAIL ===\nSe l'email elenca sconti individuali per articolo (es. \"ART.25222 SCONTO 15%\"), associa quello sconto ESATTAMENTE a quell'articolo nel campo discount: [\"15%\"].\nSe l'email menziona un articolo con codice e quantita che NON appare nel PDF, aggiungilo agli \"items\" usando i dati dell'email.\n\n=== REGOLA 12 — FATTURAZIONE SCORPORATA PER IVA ===\nSe vedi un articolo principale (es. \"CESTO - art.2552\") seguito da righe che dividono il prodotto per percentuali (es. \"4%\", \"10%\", \"22%\"):\n1. UNISCI TUTTO IN UN SOLO ARTICOLO. Queste sono aliquote IVA, non prodotti.\n2. \"qty\" = la quantita della riga principale.\n3. \"price\" = SOMMA MATEMATICAMENTE i prezzi unitari delle righe IVA.\n4. \"discount\" = Leggi ESCLUSIVAMENTE i valori nelle colonne \"Sc.1%\" e \"Sc.2%\".\n\n=== REGOLA 13 ===\nFOR LIDL ORDER IT IS PLT * PF * PEZZI IS THE QUANTITY ALWAYS WORK WITH THE PIECES WHEN WRITING THE QUANTITY!!\n\n=== ISTRUZIONI DI OUTPUT STRICT JSON ===\nEstrai i dati e restituisci SOLO il JSON seguendo questa esatta struttura.\nNON usare formattazione Markdown. NON aggiungere ```json all'inizio o alla fine.\n\n{\n  \"orders\": [\n    {\n      \"customer_name\": \"\",\n      \"supplier_name\": \"\",\n      \"order_number\": \"\",\n      \"issue_date\": \"\",\n      \"delivery_date\": \"\",\n      \"destination\": \"\",\n      \"note_ordine\": \"\",\n      \"phone\": \"\",\n      \"email\": \"\",\n      \"fax\": \"\",\n      \"piva_cliente\": \"\",\n      \"cond_pagamento\": \"\",\n      \"listino_sconto\": \"\",\n      \"items\": [\n        {\n          \"supplier_code\": \"\",\n          \"item_code\": \"\",\n          \"desc\": \"\",\n          \"um\": \"\",\n          \"qty\": 0,\n          \"price\": 0,\n          \"discount\": [],\n          \"net\": 0\n        }\n      ]\n    }\n  ]\n}",
+        "inputType": "binary",
+        "binaryPropertyName": "={{ $binary.data ? 'data' : Object.keys($binary)[0] }}",
+        "simplify": false,
+        "options": {}
+      },
+      "id": "4054c763-3a5b-4b32-9ec0-cbcf08277137",
+      "name": "Gemini: Extract PDF Data",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        -2304,
+        304
+      ],
+      "executeOnce": false,
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "iM1P3NuKsi4hAoen",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Check if the 'data' PDF was created for this specific item\nif ($input.item.binary && $input.item.binary.data) {\n  \n  // Rename the file using the JSON field for this item\n  $input.item.binary.data.fileName = $input.item.json.pdfFileName;\n\n}\n\n// Return the updated item back to the workflow\nreturn $input.item;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        304
+      ],
+      "id": "6e705cc0-2c23-46f9-b6be-bf7d5a874d95",
+      "name": "Format/Rename Output PDF"
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\n\nfor (const item of $input.all()) {\n  const raw =\n    item.json?.candidates?.[0]?.content?.parts?.[0]?.text ??\n    item.json?.content?.parts?.[0]?.text ??\n    \"\";\n\n  const clean = raw\n    .replace(/```json/gi, '')\n    .replace(/```/g, '')\n    .trim();\n\n  if (!clean || clean === '{}' || clean === '[]') {\n    continue;\n  }\n\n  if (!clean.endsWith('}')) {\n    results.push({ json: {\n      error: true,\n      reason: \"truncated\",\n      raw: clean,\n      message: \"Gemini troncato - aumenta maxOutputTokens\"\n    }});\n    continue;\n  }\n\n  try {\n    const parsed = JSON.parse(clean);\n    const orders = parsed.orders ?? [parsed];\n    for (const order of orders) {\n      if (\n        !order.customer_name &&\n        !order.order_number &&\n        (!order.items || order.items.length === 0)\n      ) {\n        continue;\n      }\n      results.push({ json: order });\n    }\n  } catch(e) {\n    results.push({ json: {\n      error: true,\n      reason: \"parse_failed\",\n      raw: clean,\n      message: e.message\n    }});\n  }\n}\n\nif (results.length === 0) {\n  return [{ json: {\n    error: true,\n    reason: \"no_valid_orders\",\n    message: \"Nessun ordine valido trovato\"\n  }}];\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2016,
+        304
+      ],
+      "id": "df4dfa06-3f72-4885-b941-ffee6976fdc9",
+      "name": "Parse: If different orders in one file"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7aded657-b9fa-48e4-999a-a4e0380a8810",
+              "leftValue": "={{ $json.subject ? $json.subject.toUpperCase().includes(\"DRINK EXCEL MODELLO\") : false }}",
+              "rightValue": "DRINK_INTERNATIONAL",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -2720,
+        -144
+      ],
+      "id": "c0f55bfe-0cf4-4837-b1ee-2c6ef0c94304",
+      "name": "Check Template Type: If Our Template"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7aded657-b9fa-48e4-999a-a4e0380a8810",
+              "leftValue": "={{ $json.subject ? $json.subject.toUpperCase().includes(\"DRINK EXCEL MODELLO\") : false }}",
+              "rightValue": " DRINK INTERNATIONAL SPA — ORDINE FORNITORE",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -2720,
+        96
+      ],
+      "id": "d910796f-17dd-4ff3-be20-f7be049136c4",
+      "name": "Check Template Type: If Our Template1"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "={{ Object.keys($binary).join(',') }}",
+        "options": {
+          "headerRow": false,
+          "includeEmptyCells": false,
+          "sheetName": "ORDINE"
+        }
+      },
+      "id": "be657da7-52f1-4281-81bf-e47ecb738538",
+      "name": "Read Excel Rows XLSX",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2464,
+        -192
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "={{ Object.keys($binary).join(',') }}",
+        "options": {
+          "headerRow": false,
+          "includeEmptyCells": false
+        }
+      },
+      "id": "c7dae89f-da65-476e-add0-29d15a8c66c9",
+      "name": "Read Excel Rows XLSX1",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2464,
+        -96
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "binaryPropertyName": "={{ Object.keys($binary).join(',') }}",
+        "options": {
+          "headerRow": false,
+          "includeEmptyCells": false,
+          "sheetName": "ORDINE"
+        }
+      },
+      "id": "e392066b-2970-4782-8c26-6bfe95536f2c",
+      "name": "Read Excel Rows XLS",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2464,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "binaryPropertyName": "={{ Object.keys($binary).join(',') }}",
+        "options": {
+          "headerRow": false,
+          "includeEmptyCells": false
+        }
+      },
+      "id": "cebce030-1ac1-44c2-842a-19c35941a16f",
+      "name": "Read Excel Rows XLS1",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2464,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\nconst rows = allItems.map(item => {\n  const r = item.json.row || item.json;\n  return Array.isArray(r) ? r : Object.values(r);\n});\n\nconst emailSubject = $('New Email with Attachment').first().json.subject ?? '';\nconst emailBody = $('New Email with Attachment').first().json.textPlain \n  || $('New Email with Attachment').first().json.text \n  || '';\n\nfunction clean(v) {\n  if (v === null || v === undefined) return '';\n  return String(v).trim();\n}\n\nfunction cleanCode(v) {\n  return String(v).trim().replace(/\\.0+$/, '');\n}\n\nfunction fixDate(v) {\n  if (!v) return '';\n  if (typeof v === 'number' && v > 40000) {\n    const d = new Date(Math.round((v - 25569) * 86400 * 1000));\n    return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;\n  }\n  const s = String(v).trim();\n  const m = s.match(/^(\\d{1,2})[\\/\\-\\.](\\d{1,2})[\\/\\-\\.](\\d{2})$/);\n  if (m) return `${m[1].padStart(2,'0')}/${m[2].padStart(2,'0')}/20${m[3]}`;\n  return s;\n}\n\nfunction isProductCode(v) {\n  const s = String(v).trim().replace(/\\.0+$/, '');\n  return /^2[0-9]{3,4}$/.test(s);\n}\n\nfunction isPositiveQty(v) {\n  if (v === null || v === undefined || v === '') return false;\n  if (isProductCode(v)) return false;\n  const n = parseFloat(String(v));\n  return !isNaN(n) && n > 0;\n}\n\nconst allText = rows.map(r => r.join(' ')).join('\\n');\n\n// Detect multi-destination list\nconst hasAddressStructure = rows.some(r => {\n  const line = r.map(v => clean(v)).join(' ');\n  return /NOMINATIVO|INDIRIZZO|LOCALITA/i.test(line);\n});\nconst hasNoProductCodes = !rows.some(r => isProductCode(r[0]));\nconst isMultiDestination = hasAddressStructure && hasNoProductCodes;\n\nif (isMultiDestination) {\n  return [{\n    json: {\n      text: allText,\n      emailSubject,\n      emailBody,\n      useHttpRequest: true,\n      orders: [{\n        customer_name: '',\n        supplier_name: 'VILLA GUELFA S.R.L.',\n        order_number: '',\n        issue_date: '',\n        delivery_date: '',\n        destination: '',\n        note_ordine: '',\n        phone: '',\n        email: '',\n        fax: '',\n        piva_cliente: '',\n        cond_pagamento: '',\n        listino_sconto: '',\n        items: []\n      }]\n    }\n  }];\n}\n\n// Detect catalog type\nconst firstDataRow = rows.find(r => isProductCode(r[0]));\nconst isThreeColCatalog = firstDataRow && firstDataRow.length >= 8 && \n  (isProductCode(firstDataRow[4]) || isProductCode(firstDataRow[8]));\n\nconst hasQtyLastCol = rows.some(r => {\n  const last = r[r.length - 1];\n  return isProductCode(r[0]) && isPositiveQty(last) && r.length > 5;\n});\n\n// Extract metadata\nlet customer_name = '';\nlet order_number = '';\nlet issue_date = '';\nlet delivery_date = '';\nlet destination = '';\nlet phone = '';\nlet email_addr = '';\nlet piva = '';\nlet cond_pagamento = '';\nlet listino_sconto = '';\nconst notes = [];\n\nfor (const row of rows) {\n  const line = row.map(v => clean(v)).join(' ').trim();\n  if (!line) continue;\n  if (/RAGIONE SOCIALE/i.test(line)) {\n    const m = line.match(/RAGIONE SOCIALE[:\\s_]*([A-Z][A-Z\\s&\\.]+?)(?:\\s{3,}|$)/i);\n    if (m) customer_name = m[1].trim();\n  }\n  if (/^AGENZIA|^F\\.LLI|^DITTA/i.test(line) && !customer_name) {\n    customer_name = clean(row[0] || row[1] || '');\n  }\n  if (/NUMERO ORDINE|ordine\\s+\\d/i.test(line)) {\n    const m = line.match(/(?:NUMERO ORDINE|ordine)\\s*[_'\\s]*(\\d+)/i);\n    if (m) order_number = m[1];\n  }\n  if (/DATA ORDINE/i.test(line)) {\n    const m = line.match(/(\\d{1,2}[\\.\\/-]\\d{1,2}[\\.\\/-]\\d{2,4})/);\n    if (m) issue_date = fixDate(m[1]);\n  }\n  if (/CONSEGNA/i.test(line) && !delivery_date) {\n    const m = line.match(/(\\d{1,2}[\\/\\.-]\\d{1,2}[\\/\\.-]\\d{2,4})/);\n    if (m) delivery_date = fixDate(m[1]);\n  }\n  if (/LUOGO CONSEGNA/i.test(line)) {\n    const m = line.replace(/LUOGO CONSEGNA MERCE/i, '').replace(/_+/g, '').trim();\n    if (m.length > 3) destination = m;\n  }\n  if (/MAIL|email/i.test(line)) {\n    const m = line.match(/[\\w\\.-]+@[\\w\\.-]+\\.\\w+/);\n    if (m && !m[0].includes('villaguelfa')) email_addr = m[0];\n  }\n  if (/TEL|CELL/i.test(line)) {\n    const m = line.match(/[\\d\\s\\+\\-]{8,}/);\n    if (m) phone = m[0].trim();\n  }\n  if (/P\\.?\\s*IVA/i.test(line)) {\n    const m = line.match(/\\b(\\d{11})\\b/);\n    if (m && m[1] !== '02537910040') piva = m[1];\n  }\n  if (/PAGAMENTO|MODALITA/i.test(line)) {\n    const cleaned = line.replace(/MODALITA['\\s]*DI PAGAMENTO[:\\s]*/i, '')\n      .replace(/_+/g, '').trim();\n    if (cleaned.length > 2) cond_pagamento = cleaned;\n  }\n  if (/SCONTO/i.test(line) && !/DESCRIZIONE/i.test(line)) {\n    const m = line.match(/SCONTO[\\s:]*([\\d%\\+\\s,\\.]+)/i);\n    if (m) listino_sconto = m[1].trim();\n  }\n  if (/URGENTE|PRE FATTURA|ANNULLA|RITIRARE|ASSEGNO|COLLI NR/i.test(line)) {\n    notes.push(line);\n  }\n}\n\nif (!customer_name) {\n  for (const row of rows.slice(0, 5)) {\n    const v = clean(row[0] || row[1] || '');\n    if (v && v.length > 3 && \n        !/(SPETT|VILLA GUELFA|ORDINE|DATA)/i.test(v) &&\n        /[A-Z]{3,}/.test(v)) {\n      customer_name = v;\n      break;\n    }\n  }\n}\n\n// Parse items\nconst items = [];\n\nif (isThreeColCatalog) {\n  for (const row of rows) {\n    if (isProductCode(row[0]) && isPositiveQty(row[2])) {\n      items.push({\n        supplier_code: cleanCode(row[0]),\n        item_code: '',\n        desc: clean(row[1]),\n        um: 'PZ',\n        qty: parseFloat(row[2]),\n        price: 0,\n        discount: listino_sconto ? [listino_sconto] : [],\n        net: ''\n      });\n    }\n    if (row.length > 6 && isProductCode(row[4]) && isPositiveQty(row[6])) {\n      items.push({\n        supplier_code: cleanCode(row[4]),\n        item_code: '',\n        desc: clean(row[5]),\n        um: 'PZ',\n        qty: parseFloat(row[6]),\n        price: 0,\n        discount: listino_sconto ? [listino_sconto] : [],\n        net: ''\n      });\n    }\n    if (row.length > 11 && isProductCode(row[8]) && isPositiveQty(row[11])) {\n      items.push({\n        supplier_code: cleanCode(row[8]),\n        item_code: '',\n        desc: clean(row[9]),\n        um: 'PZ',\n        qty: parseFloat(row[11]),\n        price: 0,\n        discount: listino_sconto ? [listino_sconto] : [],\n        net: ''\n      });\n    }\n  }\n} else if (hasQtyLastCol) {\n  for (const row of rows) {\n    if (!isProductCode(row[0])) continue;\n    const qty = parseFloat(row[row.length - 1]);\n    if (!isNaN(qty) && qty > 0) {\n      let price = 0;\n      for (let i = row.length - 2; i >= 2; i--) {\n        const v = clean(row[i]).replace('€', '').replace(',', '.').trim();\n        const n = parseFloat(v);\n        if (!isNaN(n) && n > 1 && n < 1000) { price = n; break; }\n      }\n      items.push({\n        supplier_code: cleanCode(row[0]),\n        item_code: '',\n        desc: clean(row[1]),\n        um: 'PZ',\n        qty: qty,\n        price: price,\n        discount: [],\n        net: ''\n      });\n    }\n  }\n} else {\n  for (const row of rows) {\n    if (!isProductCode(row[0])) continue;\n    let qty = 0;\n    let price = 0;\n    if (row.length >= 5 && isPositiveQty(row[4])) {\n      qty = parseFloat(row[4]);\n      price = parseFloat(String(row[3] || 0).replace(',', '.')) || 0;\n    } else if (row.length >= 3 && isPositiveQty(row[2])) {\n      qty = parseFloat(row[2]);\n    }\n    if (qty > 0) {\n      let discountArr = [];\n      if (listino_sconto) {\n        const parts = listino_sconto.split(/\\+/);\n        discountArr = parts.map(p => {\n          const n = parseFloat(p.replace('%','').trim());\n          return isNaN(n) ? p.trim() : n + '%';\n        }).filter(p => p);\n      }\n      items.push({\n        supplier_code: cleanCode(row[0]),\n        item_code: '',\n        desc: clean(row[1]),\n        um: clean(row[2]) && !isPositiveQty(row[2]) ? clean(row[2]) : 'PZ',\n        qty: qty,\n        price: price,\n        discount: discountArr,\n        net: price > 0 ? String((qty * price * discountArr.reduce((acc, d) => {\n          const n = parseFloat(d.replace('%',''));\n          return isNaN(n) ? acc : acc * (1 - n/100);\n        }, 1)).toFixed(2)) : ''\n      });\n    }\n  }\n}\n\nfunction parseDiscount(s) {\n  if (!s) return [];\n  const parts = s.split(/[\\+\\s]+/);\n  return parts.map(p => {\n    p = p.trim();\n    if (p.includes('%')) return p;\n    const n = parseFloat(p);\n    return !isNaN(n) && n > 0 ? n + '%' : null;\n  }).filter(Boolean);\n}\n\nconst discountArr = parseDiscount(listino_sconto);\nif (discountArr.length > 0) {\n  items.forEach(item => {\n    if (!item.discount || item.discount.length === 0) {\n      item.discount = discountArr;\n    }\n  });\n}\n\nreturn [{\n  json: {\n    text: allText,\n    emailSubject,\n    emailBody,\n    orders: [{\n      customer_name: customer_name || '',\n      supplier_name: 'VILLA GUELFA S.R.L.',\n      order_number: order_number || '',\n      issue_date: issue_date || '',\n      delivery_date: delivery_date || '',\n      destination: destination || '',\n      note_ordine: notes.join(' | ') || '',\n      phone: phone || '',\n      email: email_addr || '',\n      fax: '',\n      piva_cliente: piva || '',\n      cond_pagamento: cond_pagamento || '',\n      listino_sconto: listino_sconto || '',\n      items: items\n    }]\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2256,
+        144
+      ],
+      "id": "41b83b6c-2608-4de8-a40d-8cc526870a06",
+      "name": "Clean/Prepare Excel Data"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "==== OGGETTO EMAIL ===\n{{ $json.emailSubject ?? $('New Email with Attachment').first().json.subject }}\n\n=== CORPO EMAIL ===\n{{ $json.emailBody ?? $('New Email with Attachment').first().json.textPlain ?? $('New Email with Attachment').first().json.text }}\n\n=== CONTENUTO EXCEL ===\n{{ $json.text }}\n\nEstrai i dati e restituisci SOLO questo JSON:\n\n{\n  \"orders\": [\n    {\n      \"customer_name\": \"\",\n      \"supplier_name\": \"\",\n      \"order_number\": \"\",\n      \"issue_date\": \"\",\n      \"delivery_date\": \"\",\n      \"destination\": \"\",\n      \"note_ordine\": \"\",\n      \"phone\": \"\",\n      \"email\": \"\",\n      \"fax\": \"\",\n      \"piva_cliente\": \"\",\n      \"cond_pagamento\": \"\",\n      \"listino_sconto\": \"\",\n      \"items\": [\n        {\n          \"supplier_code\": \"\",\n          \"item_code\": \"\",\n          \"desc\": \"\",\n          \"um\": \"\",\n          \"qty\": 0,\n          \"price\": 0,\n          \"discount\": [],\n          \"net\": \"\"\n        }\n      ]\n    }\n  ]\n}\n\n=== REGOLA 0 — RUOLI ===\nsupplier_name e SEMPRE Villa Guelfa S.r.l.\nIl CLIENTE e chi ha emesso l ordine.\nSpett.le introduce il FORNITORE non il cliente.\nMAI confondere i due ruoli.\nTutti i campi stringa: MAI null, usa \"\".\n\n=== REGOLA 1 — RICONOSCI IL TIPO DI EXCEL ===\n\nHai ricevuto uno di questi tre tipi di documento.\nIdentificalo prima di estrarre qualsiasi dato.\n\nTIPO A — CATALOGO A 3 COLONNE (Villa Guelfa XLS):\nRiconosci questo tipo quando vedi:\n- Intestazione con RAGIONE SOCIALE, DATA ORDINE,\n  NUMERO ORDINE, LUOGO CONSEGNA MERCE\n- Righe prodotto con codici che iniziano con 25xx\n\nIl testo estratto ha questo formato esatto per riga:\nGRUPPO1_COD | GRUPPO1_DESC | GRUPPO1_QTY | GRUPPO1_QTY_DUP | GRUPPO2_COD | GRUPPO2_DESC | GRUPPO2_QTY | GRUPPO3_COD | GRUPPO3_DESC | GRUPPO3_QTY\n\nREGOLA CRITICA PER PARSING:\n- I valori QTY possono essere numeri interi (es. 50, 8, 12) OPPURE numeri con decimale (es. 50.0, 8.0).\n- I codici prodotto sono SEMPRE numeri 25xx (es. 2501, 2530, 2552).\n- Se dopo la descrizione c'è un numero piccolo (es. 50, 12, 8.0) che NON inizia per 25xx → è la quantità ordinata (qty).\n- Se dopo la descrizione il prossimo valore è un numero 25xx → è il codice del gruppo successivo (significa che il prodotto precedente NON è stato ordinato).\n- customer_name = il testo scritto ESATTAMENTE dopo o vicino a \"RAGIONE SOCIALE\" (es. \"F.LLI MORGESE SRL\").\n- IGNORA COMPLETAMENTE il pié di pagina con i contatti di Villa Guelfa.\n\nEsempi di parsing corretto:\n\"2501 | DOLCE VITA PANETTONE | 8.0 | 8.0 | 2530...\"\n→ 2501 qty=8 ✓, poi inizia gruppo 2 con 2530\n\n\"2503 | LATTA SCIROCCO | 2532 | DEL CONVIVIO...\"\n→ 2503 NON ordinato (dopo desc c'è 2532 senza .0)\n→ 2532 è il codice del gruppo 2\n\n\"2507 | PRINCIPE | 2536 | GOLOSITA | 16.0\"\n→ 2507 NON ordinato\n→ 2536 ordinato qty=16\n\n\"2510 | AMBRA | 2.0 | 2.0 | 2539...\"\n→ 2510 ordinato qty=2 ✓\n\n\"2521 | GRAN MILANO | 2550.0 | SAPORI...\"\n→ ATTENZIONE: 2550.0 ha il decimale quindi è una QTY\n→ MA 2550 è anche un codice prodotto valido\n→ In questo caso 2550.0 è il codice del gruppo 2\n  scritto con decimale per errore Excel — trattalo\n  come codice non come quantità\n→ 2521 NON ordinato\n\nREGOLA PER GRUPPO 3 (colonne 8-11):\nI codici del gruppo 3 appaiono come: 2552.0, 2553.0\nSono codici non quantità — ignorali se non hanno\nuna quantità esplicita nella stessa riga.\n\nEstrai items SOLO per prodotti dove il valore\nimmediatamente dopo la descrizione termina con .0\nE non è un codice prodotto valido (25xx).\n\nTIPO B — ORDINE SEMPLICE A RIGHE (XLSX Ragazzini):\nRiconosci questo tipo quando vedi:\n- Intestazione con nome agenzia, Spett.le Villa Guelfa\n- Nome e indirizzo del cliente (F.LLI DEL MAGNO ecc.)\n- P.I. del cliente\n- Poche righe prodotto con formato:\n  codice | descrizione | (vuoto) | prezzo | quantità\n- Sconto scritto separatamente (SCONTO 20%)\n- Pagamento scritto separatamente\n\nIl testo estratto mostra righe come:\n2509 | dei GUELFI | | 29.75 | 24\n2536 | GOLOSITA | | 29.1 | 24\n2549 | MENU D AUTUNNO | | 84.65 | 4\n\nEstrai:\n- customer_name = nome azienda cliente\n  (es. F.LLI DEL MAGNO di DEL MAGNO CLAUDIO & C. SNC)\n- order_number da riga \"ordine 188\" o simile\n- delivery_date da riga CONSEGNA\n- destination = indirizzo del cliente\n- piva_cliente da P.I.\n- cond_pagamento da PAGAMENTO\n- listino_sconto da SCONTO\n- items: ogni riga con codice e quantità\n\nPer ogni item nel TIPO B:\n- supplier_code = codice 4 cifre (col 0)\n- desc = descrizione (col 1)\n- qty = quantità (col 4 o ultima colonna numerica)\n- price = prezzo (col 3)\n- discount = sconto globale trovato nel documento\n- net = qty x price con sconto applicato\n\nTIPO C — LISTINO CON QUANTITA (ODS Panconi):\nRiconosci questo tipo quando vedi:\n- Colonne: Cod | DESCRIZIONE | CATALOGO | prezzi IVA | Qtà\n- Molti prodotti con prezzi e aliquote IVA\n- La colonna Qtà è l ULTIMA colonna\n- Solo alcune righe hanno un numero nella colonna Qtà\n- Righe senza Qtà NON sono ordinate\n\nIl testo estratto mostra righe come:\n2501 | DOLCE VITA PANETTONE | I DOLCI | 15,08 | 1,87 | 1,92 | 11,33% | 18,87 €\n2533 | IL GASTRONOMICO | I GASTRONOMICI | 7,35 | 9,82 | ... | 22,14 € | 12\n2534 | SPUMANTIERA CHLOE | ... | 23,42 € | 18\n\nEstrai:\n- customer_name dal corpo email o intestazione\n- delivery_date dal corpo email o intestazione\n- items: SOLO prodotti dove l ultima colonna\n  ha un numero positivo (quella è la Qtà)\n\nPer ogni item nel TIPO C:\n- supplier_code = codice 4 cifre (prima colonna)\n- desc = descrizione (seconda colonna)\n- qty = valore nell ultima colonna numerica\n- price = valore con simbolo € nella penultima\n  colonna (es. 22,14 € → 22.14)\n- discount = [] se non presente\n- net = \"\"\n\nTIPO E — CATALOGO TESTO INLINE (Villa Guelfa XLS versione testo):\nRiconosci questo tipo quando vedi:\n- Stessa struttura del TIPO A ma le quantità \n  appaiono INLINE nella stessa riga del prodotto\n- Formato: CODICE DESCRIZIONE QUANTITA\n- Esempio:\n  2506 SPUMANTIERA FANNY 50  2535 LA CONTADINA\n  2533 IL GASTRONOMICO 12  2534 SPUMANTIERA CHLOE 18\n- La quantità è il numero che appare DOPO \n  la descrizione del prodotto e PRIMA del \n  prossimo codice prodotto\n- I prodotti senza numero dopo la descrizione \n  NON sono stati ordinati\n\nREGOLA CRITICA PER PARSING TIPO E:\nPer ogni riga del documento cerca questo pattern:\nCODICE(4 cifre) DESCRIZIONE(testo) QUANTITA(numero) \noppure\nCODICE(4 cifre) DESCRIZIONE(testo) [nessun numero]\n\nEsempi corretti:\n\"2506 SPUMANTIERA FANNY 50\" \n→ supplier_code=2506, desc=SPUMANTIERA FANNY, qty=50\n\n\"2501 DOLCE VITA PANETTONE   2530 DOLCE VITA GOURMET\"\n→ 2501 NON ordinato (nessun numero prima del prossimo codice)\n→ 2530 anche da analizzare separatamente\n\n\"2511 LATTA MAESTRALE   2540 PIEMONTE IN TAVOLA\"\n→ ENTRAMBI non ordinati\n\nNota: delivery_date si trova spesso nelle NOTE\na lato del catalogo (es. \"CONSEGNA NON OLTRE IL 10/12\")\n→ converti in GG/MM/AAAA → 10/12/2025\n\nEstrai:\n- customer_name da RAGIONE SOCIALE\n- delivery_date da NOTE o CONSEGNA NON OLTRE\n- destination da LUOGO CONSEGNA MERCE\n- items SOLO con quantità esplicita inline\n\nTIPO F — LISTINO PREZZI VILLA GUELFA (senza quantità):\nRiconosci questo tipo quando vedi:\n- Intestazione \"Listino Natale\" o \"Listino Prezzi\"\n- Colonne: Cod. | DESCRIZIONE | PREZZO | CATALOGO |\n  imp.IVA 4% | imp.IVA 10% | imp.IVA 22% | \n  tot IVA | % IVA MEDIA | TOTALE IVA INCLUSA\n- Logo Villa Guelfa in alto\n- Nessuna colonna QUANTITA o PEZZI\n- L ultima colonna è un prezzo (es. 18,87 €)\n  NON una quantità\n\nIn questo caso:\n- Questo documento è un LISTINO PREZZI non un ordine\n- NON contiene quantità ordinate\n- Le quantità vengono dal CORPO EMAIL\n- Il campo PREZZO (es. € 16,95) è il prezzo unitario\n- Il campo TOTALE IVA INCLUSA è il prezzo con IVA\n- Il campo CATALOGO (es. PZ.12, PZ.6) indica \n  il numero di pezzi per confezione (non la qty!)\n\nProcedura per TIPO F:\nSTEP 1 — Cerca le quantità nel corpo email\nIl cliente ha scritto le quantità nell email come:\n\"DOLCE VITA PANETTONE 10\" oppure\n\"10 x DOLCE VITA PANETTONE\" oppure\n\"cod 2501 qty 10\"\n\nSTEP 2 — Abbina ogni prodotto nominato nell email\nal suo prezzo nel listino usando il codice o il nome\n\nSTEP 3 — Per ogni prodotto ordinato nell email:\n- supplier_code = codice dalla colonna Cod.\n- desc = DESCRIZIONE dal listino\n- qty = quantità dal corpo email\n- price = PREZZO dal listino (senza IVA, es. 16.95)\n- discount = sconti menzionati nell email\n- net = \"\"\n\nSTEP 4 — Se nell email ci sono destinazioni diverse\ncrea ordini separati seguendo le Regole 11 e speciale.\n\nSe il corpo email non menziona quantità specifiche:\nrestituisci items vuoto e metti in note_ordine\n\"LISTINO PREZZI ALLEGATO - QUANTITA NON SPECIFICATE\"\n\n=== REGOLA 2 — CODICI PRODOTTO ===\nsupplier_code inizia con 2 e ha 4-5 cifre.\nEsempi: 2501, 2518, 2535, 25325.\nMAI inserire EAN 12-13 cifre.\nMAI invertire supplier_code e item_code.\nMAI inventare codici non presenti nel documento.\nSe non trovi codice valido: lascia \"\".\n\n=== REGOLA 3 — QUANTITA ===\nTIPO A: qty = valore nella colonna PEZZI.\n  Il valore appare due volte uguale — usa uno solo.\n  Ignora righe senza PEZZI o con PEZZI vuoto.\nTIPO B: qty = ultima colonna numerica della riga.\nTIPO C: qty = ULTIMA colonna del documento.\n  Ignora righe senza Qtà o con Qtà vuota.\nMAI usare Bancalaggio, N.plt, totali come qty.\nSe quantità è vuota, trattino, zero: ESCLUDI riga.\n\n=== REGOLA 4 — PREZZI E SCONTI ===\nConverti prezzi con punto decimale: 12,50 → 12.50.\nSe senza prezzi: price=0, net=\"\".\ndiscount è ARRAY di stringhe.\n\nSe trovi uno sconto singolo (es. SCONTO 20%):\n→ discount = [\"20%\"]\n\nSe trovi sconti multipli separati da + o spazio\n(es. SCONTO 20% + 5% oppure 20%+5%):\n→ discount = [\"20%\", \"5%\"]\nOgni percentuale va come elemento separato dell array.\nNON unire in una sola stringa tipo \"20%+5%\".\n\nSe decimale è 00: scrivi senza decimali (\"20%\").\nSe decimale non è 00: mantieni (\"10,50%\").\nSe nessuno sconto: discount = [].\n\n=== REGOLA 5 — DESTINAZIONE ===\nTIPO A: LUOGO CONSEGNA MERCE nel documento.\nTIPO B: indirizzo del cliente nel documento.\nTIPO C: dal corpo email se non nel documento.\nSe non trovi: \"\". MAI inventare.\nStringa semplice su una riga.\n\n=== REGOLA 6 — DATE E PAGAMENTO ===\nissue_date e delivery_date: formato GG/MM/AAAA.\nData 29.10.25 → 29/10/2025.\nData 28/11/25 → 28/11/2025.\nCONSEGNA o DATA CONSEGNA → delivery_date.\nSe delivery_date contiene testo come URGENTE\ninvece di una data: metti URGENTE in note_ordine\ne lascia delivery_date come \"\".\nSe non trovata: \"\".\n\ncond_pagamento: cerca nel documento queste diciture:\nMODALITA DI PAGAMENTO, PAGAMENTO, MODALITA PAGAMENTO.\nCopia il valore ESATTAMENTE come scritto nel documento.\nEsempi corretti:\n- \"assegno a fine campagna\"\n- \"BONIFICO BANCARIO 60 GG DF.F.M.\"\n- \"RIMESSA DIRETTA 30 GG\"\n- \"1/2 AGENTE\"\nSe non trovato: \"\".\n\n=== REGOLA 7 — INTEGRAZIONE EMAIL ===\nExcel è fonte primaria.\nEmail è fonte secondaria per:\n- Dati cliente mancanti nell Excel\n- Data consegna se non nell Excel\n- Sconti aggiuntivi\n- Note speciali\nMAI usare firma Villa Guelfa come dati cliente.\n\n=== REGOLA 8 — NOTE ===\nTesti speciali → note_ordine:\nURGENTE, PRE FATTURA, ANNULLA PRECEDENTE,\nRITIRARE ASSEGNO, COLLI NR, TEL X CONSEGNA.\nSe nessuna nota: \"\".\n\n=== REGOLA 9 — DIVIETO ALLUCINAZIONE ===\nNON inventare MAI valori.\nSe campo non trovato: \"\".\nNull è vietato — usa sempre \"\".\n\n=== REGOLA 10 — ORDINE NEL CORPO EMAIL + DATI IN EXCEL ===\n\nQuando l Excel contiene SOLO dati anagrafici (TIPO D)\ne l ordine è nel corpo email, segui queste regole:\n\nPRODOTTI DAL CORPO EMAIL:\nIl testo dell ordine ha formato libero come:\nDOLCE VITA PANDORO 36\nSCIROCCO 24\nFANNY 12\nGRAN GALA' 4\nPECCATI DI GOLA 4\n\nPer ogni riga: il numero alla fine è la qty.\nCerca il codice nel catalogo Villa Guelfa.\nEsempi:\n- DOLCE VITA PANDORO 36 → supplier_code=2502, qty=36\n- SCIROCCO 24 → supplier_code=2503, qty=24\n- FANNY 12 → supplier_code=2506, qty=12\n- GRAN GALA' 4 → supplier_code=2518, qty=4\n- PECCATI DI GOLA 4 → supplier_code=2514, qty=4\n\nSCONTO DAL CORPO EMAIL:\nSe trovi \"Sconto X%\" nel corpo email:\n- Applicalo a TUTTI gli items come discount=[\"X%\"]\n- NON lasciare discount=[] se lo sconto è presente\n- Cerca: \"Sconto\", \"sconto\", \"SCONTO\" seguito da numero%\n\nSETTIMANA CONSEGNA:\nSe trovi \"Consegna settimana XX\" nel corpo email:\n- Determina l ANNO dalla data dell email o dal \n  contesto del documento\n- Calcola la data reale del lunedì della settimana \n  ISO indicata per quell anno\n- Esempi per 2025:\n  Settimana 51 del 2025 = 15/12/2025\n  Settimana 52 del 2025 = 22/12/2025\n- Esempi per 2026:\n  Settimana 1 del 2026 = 29/12/2025\n  Settimana 10 del 2026 = 02/03/2026\n  Settimana 20 del 2026 = 11/05/2026\n  Settimana 48 del 2026 = 23/11/2026\n  Settimana 51 del 2026 = 14/12/2026\n  Settimana 52 del 2026 = 21/12/2026\n- Se l anno non è chiaro usa l anno corrente\n- delivery_date = lunedì della settimana in \n  formato GG/MM/AAAA\n\nDATI CLIENTE DALL EXCEL:\nUsa l Excel per compilare:\n- customer_name\n- destination (indirizzo di consegna)\n- piva_cliente\n- phone, email, fax\nMAI usare dati Villa Guelfa come dati cliente.\n\nFIRMA VILLA GUELFA:\nL email può contenere una firma di un commerciale\nVilla Guelfa (es. Filippo Bernocco).\nQuesta firma NON è il cliente.\nIl cliente è chi ha scritto il messaggio originale\no l azienda nell Excel.\n\n=== REGOLA 11 — LISTA DESTINAZIONI (AGGIORNATA) ===\n\nQuando il documento Excel contiene colonne come\nNOMINATIVO, INDIRIZZO, LOCALITA, BIGLIETTO AUGURI\nsenza codici prodotto nelle righe:\n\nSTEP 1 — Trova il prodotto nel corpo email:\nCerca pattern come:\n\"15 confezioni 25211, DELIZIE DA RE, €29,99\"\n\"N. pezzi CODICE, DESCRIZIONE, €PREZZO\"\nEstrai: supplier_code, desc, price, qty totale\n\nSTEP 2 — Trova gli sconti nel corpo email:\nCerca \"Sconto X%\" — possono essere multipli\nes. \"Sconto 5% + Sconto 3%\" → [\"5%\",\"3%\"]\n\nSTEP 3 — Per ogni riga Excel con indirizzo:\nCrea UN ordine separato con:\n- destination = NOMINATIVO + INDIRIZZO + CAP + \n  LOCALITA + PROV su una riga\n- items = il prodotto trovato nello STEP 1\n  con qty = valore colonna Q. di quella riga\n- note_ordine = BIGLIETTO AUGURI + NOTE CONSEGNA\n- customer_name = dai dati cliente in fondo Excel\n  (es. Ragione Sociale: FLORIDA SRL)\n- delivery_date = settimana consegna nel documento\n- cond_pagamento = MODALITA DI PAGAMENTO nel documento\n- piva_cliente = P.IVA dai dati cliente in Excel\n\nSTEP 4 — Raggruppa righe con stesso indirizzo:\nSe più righe hanno lo stesso indirizzo fisico\nsommale in un ordine con qty totale e metti\ntutti i nomi in note_ordine.\n\nIMPORTANTE: Il prodotto viene SEMPRE dall email.\nL Excel contiene SOLO gli indirizzi di consegna.\n\n=== REGOLA CUSTOMER NAME (EMAIL INOLTRATE) ===\nIl nome del cliente sul PDF potrebbe essere errato (es. \"BUSE\"). \nDevi SEMPRE controllare il CORPO EMAIL per trovare l'oggetto originale dell'email inoltrata. \nCerca righe nel testo dell'email come \"Oggetto: [EXT] Ordine MGT Bevande\" oppure \"Subject: Ordine...\". \nEstrai il vero nome dell'azienda da quella riga (es. \"MGT Bevande\") e inseriscilo come \"customer_name\". \nIl nome trovato nell'oggetto originale dell'email vince SEMPRE sul nome scritto nel PDF.\n\n=== REGOLA 0 AGGIUNTA — ERRORI COMUNI DA EVITARE ===\n\nTELEFONO:\nIl campo TEL nel catalogo Villa Guelfa ha spesso\nil numero vuoto o incompleto.\nMAI usare il CAP (5 cifre) come telefono.\nMAI usare numeri di pagina o codici come telefono.\nSe il numero ha meno di 6 cifre: lascia phone = \"\".\nIl telefono del cliente è vicino a TEL o CELL\nnella sezione dati cliente in alto.\n\nEMAIL:\ninfo@villaguelfa.it e ordini@villaguelfa.it\nappartengono a Villa Guelfa — NON sono email cliente.\nMAI usarle come email del cliente.\nL email del cliente è quella scritta vicino a MAIL\nnella sezione dati cliente.\nSe l email trovata è di Villa Guelfa: lascia \"\".\n\nDESTINAZIONE:\nRimuovi tutti gli spazi e underscore in eccesso.\n\"MADDALONI    AZIENDA PRIVATA\" → \"MADDALONI\"\nPrendi solo la parte significativa dell indirizzo.\nSe il campo LUOGO CONSEGNA MERCE è vuoto o ha solo\nunderscore: lascia destination = \"\".\n\nCONDIZIONI PAGAMENTO:\nSe il campo contiene solo underscore, trattini\no spazi vuoti: lascia cond_pagamento = \"\".\nDeve contenere testo reale come \"bonifico\",\n\"assegno\", \"rimessa\" ecc.\n\nP.IVA CLIENTE:\nCerca PARTITA IVA nella sezione dati cliente.\nNel catalogo Villa Guelfa è vicino a PARTITA IVA.\n02537910040 è la P.IVA di Villa Guelfa — NON usarla.\n\nOUTPUT: Inizia con { e finisci con }. Nientaltro."
+            }
+          ]
+        },
+        "simplify": false,
+        "jsonOutput": true,
+        "builtInTools": {},
+        "options": {
+          "systemMessage": "Sei un assistente esperto nell estrazione dati da \nordini B2B italiani in formato Excel o tabellare.\nRispondi ESCLUSIVAMENTE con JSON valido.\nZero testo aggiuntivo, zero markdown, zero backtick.\nInizia con { e finisci con }."
+        }
+      },
+      "id": "afbdc992-fe9b-4b67-b4a4-10b8e76ccf21",
+      "name": "Gemini: Extract Excel Data",
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        -2080,
+        144
+      ],
+      "executeOnce": true,
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "iM1P3NuKsi4hAoen",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\n\nfor (const item of $input.all()) {\n  // Handle HTTP Request response structure\n  const raw = \n    item.json?.candidates?.[0]?.content?.parts?.[0]?.text ??\n    item.json?.text ??\n    item.json?.output ??\n    '';\n\n  const clean = raw\n    .replace(/```json/gi, '')\n    .replace(/```/g, '')\n    .trim();\n\n  if (!clean || clean === '{}') continue;\n\n  if (!clean.endsWith('}')) {\n    results.push({ json: {\n      error: true,\n      reason: 'truncated',\n      message: 'Gemini troncato'\n    }});\n    continue;\n  }\n\n  try {\n    const parsed = JSON.parse(clean);\n    const orders = parsed.orders ?? [parsed];\n    for (const order of orders) {\n      if (\n        !order.customer_name &&\n        !order.order_number &&\n        (!order.items || order.items.length === 0)\n      ) continue;\n\n      // Sanitize null/0 fields\n      ['phone','fax','listino_sconto','cond_pagamento',\n       'note_ordine','destination','email'].forEach(f => {\n        if (order[f] === null || order[f] === 0 || \n            order[f] === undefined) order[f] = '';\n      });\n\n      results.push({ json: order });\n    }\n  } catch(e) {\n    results.push({ json: {\n      error: true,\n      reason: 'parse_failed',\n      message: e.message\n    }});\n  }\n}\n\nif (results.length === 0) {\n  return [{ json: {\n    error: true,\n    message: 'Nessun ordine valido'\n  }}];\n}\n\nreturn results;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1776,
+        144
+      ],
+      "id": "d6fb5a55-2910-4447-8049-f06831654d8a",
+      "name": "Format Excel Output"
+    },
+    {
+      "parameters": {
+        "text": "={{ $('New Email with Attachment').item.json.subject + '\\n\\n' + ($('New Email with Attachment').item.json.textPlain || $('New Email with Attachment').item.json.text) }}",
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"orders\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"customer_name\": {\"type\": \"string\", \"default\": \"\"},\n          \"supplier_name\": {\"type\": \"string\", \"default\": \"\"},\n          \"order_number\": {\"type\": \"string\", \"default\": \"\"},\n          \"issue_date\": {\"type\": \"string\", \"default\": \"\"},\n          \"delivery_date\": {\"type\": \"string\", \"default\": \"\"},\n          \"destination\": {\"type\": \"string\", \"default\": \"\"},\n          \"note_ordine\": {\"type\": \"string\", \"default\": \"\"},\n          \"phone\": {\"type\": \"string\", \"default\": \"\"},\n          \"email\": {\"type\": \"string\", \"default\": \"\"},\n          \"fax\": {\"type\": \"string\", \"default\": \"\"},\n          \"piva_cliente\": {\"type\": \"string\", \"default\": \"\"},\n          \"cond_pagamento\": {\"type\": \"string\", \"default\": \"\"},\n          \"listino_sconto\": {\"type\": \"string\", \"default\": \"\"},\n          \"items\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"object\",\n              \"properties\": {\n                \"supplier_code\": {\"type\": \"string\", \"default\": \"\"},\n                \"item_code\": {\"type\": \"string\", \"default\": \"\"},\n                \"desc\": {\"type\": \"string\", \"default\": \"\"},\n                \"um\": {\"type\": \"string\", \"default\": \"\"},\n                \"qty\": {\"type\": \"number\", \"default\": 0},\n                \"price\": {\"type\": \"number\", \"default\": 0},\n                \"discount\": {\n                  \"type\": \"array\",\n                  \"items\": {\"type\": \"string\"},\n                  \"default\": []\n                },\n                \"net\": {\"type\": \"string\", \"default\": \"\"}\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}",
+        "options": {
+          "systemPromptTemplate": "==== OGGETTO EMAIL ===\n{{ $json.emailSubject ?? $('New Email with Attachment').first().json.subject }}\n\n=== CORPO EMAIL ===\n{{ $json.emailBody ?? $('New Email with Attachment').first().json.textPlain ?? $('New Email with Attachment').first().json.text }}\n\n=== CONTENUTO EXCEL ===\n{{ $json.text }}\n\nEstrai i dati e restituisci SOLO questo JSON:\n\n{\n  \"orders\": [\n    {\n      \"customer_name\": \"\",\n      \"supplier_name\": \"\",\n      \"order_number\": \"\",\n      \"issue_date\": \"\",\n      \"delivery_date\": \"\",\n      \"destination\": \"\",\n      \"note_ordine\": \"\",\n      \"phone\": \"\",\n      \"email\": \"\",\n      \"fax\": \"\",\n      \"piva_cliente\": \"\",\n      \"cond_pagamento\": \"\",\n      \"listino_sconto\": \"\",\n      \"items\": [\n        {\n          \"supplier_code\": \"\",\n          \"item_code\": \"\",\n          \"desc\": \"\",\n          \"um\": \"\",\n          \"qty\": 0,\n          \"price\": 0,\n          \"discount\": [],\n          \"net\": \"\"\n        }\n      ]\n    }\n  ]\n}\n\nSei un assistente esperto nell estrazione dati da \nordini B2B italiani ricevuti via email.\n\n=== REGOLA 0 — RUOLI ===\nsupplier_name e SEMPRE Villa Guelfa S.r.l. o\nRegalidea S.r.l. a seconda del contesto.\nIl CLIENTE e chi ha scritto l email o chi viene\nmenzionato come acquirente.\nMAI confondere mittente con destinatario.\nLa firma Villa Guelfa o Regalidea in fondo\nappartiene al commerciale che ha inoltrato.\nNON usarla come dati cliente.\nI dati cliente sono nel messaggio originale.\n\n=== REGOLA 1 — ESTRAZIONE PRODOTTI DAL TESTO ===\nL ordine e scritto nel corpo email in formato libero.\nRiconosci i prodotti quando vedi:\n- Nome prodotto seguito da numero (es. SCIROCCO 24)\n- Numero seguito da nome (es. 24 SCIROCCO)\n- Liste con prodotti e quantita\n- Frasi come vorrei X pezzi di Y\nPer ogni prodotto:\n- desc = solo il nome del prodotto senza codici\n- qty = numero associato a quel prodotto\n- supplier_code = cerca nel catalogo Villa Guelfa\n- price = 0 se non indicato\nSe il codice appare nella descrizione\n(es. CESTE 2521 Cesta Gran Milano):\n- supplier_code = 2521\n- desc = Cesta Gran Milano (rimuovi il codice)\n\n=== REGOLA 2 — IDENTIFICAZIONE CODICI PRODOTTO ===\n\nI codici prodotto seguono questo schema fisso.\nUsalo per identificare e assegnare i codici \ncorrettamente in QUALSIASI documento.\n\nSCHEMA CODICI FORNITORE (supplier_code):\n\nSE il fornitore è VILLA GUELFA:\n- supplier_code inizia SEMPRE con \"2\"\n- Ha 4 cifre (es. 2501, 2518) O 5 cifre (es. 25325)\n- Esempi: 2501, 2502, 2503, 2506, 2507, 2508, 2509,\n  2510, 2511, 2512, 2513, 2514, 2515, 2516, 2517,\n  2518, 2519, 2520, 2521, 2522, 2523, 2524, 2525,\n  2530, 2531, 2532, 2533, 2534, 2535, 2536, 2537,\n  2538, 2539, 2540, 2541, 2542, 2543, 2544, 2545,\n  2546, 2547, 2548, 2549, 2550, 2551, 2552, 2553,\n  2554, 2555, 25211, 25222, 25325 ecc.\n- Se vedi un numero che inizia con 2 e ha 4-5 cifre\n  nel contesto di un ordine Villa Guelfa:\n  è SEMPRE il supplier_code\n\nSE il fornitore è REGALIDEA o DRINK INTERNATIONAL\no qualsiasi altro fornitore con codici che iniziano \ncon 6:\n- supplier_code inizia SEMPRE con \"6\"\n- Ha 5-6 cifre (es. 60123, 601234)\n- Se vedi un numero che inizia con 6 e ha 5-6 cifre:\n  è SEMPRE il supplier_code\n\nCODICE ARTICOLO (item_code):\n- È il codice del CLIENTE per lo stesso prodotto\n- Diverso dal supplier_code\n- Può avere qualsiasi formato alfanumerico\n- Esempi: QUA25222, QUA25200, K144, ABC123\n- Se nel documento c'è UN SOLO codice per prodotto:\n  mettilo in supplier_code seguendo le regole sopra\n- Se ci sono DUE codici per prodotto:\n  quello che rispetta le regole sopra = supplier_code\n  l'altro = item_code\n\nREGOLE ASSOLUTE:\n- MAI inserire EAN (12-13 cifre) in qualsiasi campo\n- MAI invertire supplier_code e item_code\n- MAI inventare codici non presenti nel documento\n- Se il codice è nel testo descrizione \n  (es. \"CESTE 2521 Gran Milano\"):\n  estrailo → supplier_code = \"2521\", \n  desc = \"Gran Milano\"\n- Se non trovi codice valido: lascia \"\"\n\n=== REGOLA 3 — DESTINAZIONE ===\nCerca nell email indirizzo di consegna esplicito.\nNote come consegna a, spedire a, c/o, magazzino.\nSe non trovi nulla di esplicito: \"\".\nMAI inventare. MAI usare indirizzo Villa Guelfa.\ndestination e sempre stringa semplice su una riga.\n\n=== REGOLA 4 — DATE E CONSEGNA ===\ndelivery_date formato GG/MM/AAAA.\nSettimana consegna conversione 2025:\nSettimana 47 = 17/11/2025\nSettimana 48 = 24/11/2025\nSettimana 49 = 01/12/2025\nSettimana 50 = 08/12/2025\nSettimana 51 = 15/12/2025\nSettimana 52 = 22/12/2025\nCONSEGNA MASSIMA o CONSEGNA ENTRO = delivery_date.\nData testuale come 24 NOVEMBRE = 24/11/2025.\n\n=== REGOLA 5 — SCONTI ===\ndiscount e ARRAY di stringhe per ogni item.\nSconto globale (es. Sconto 10%):\napplicalo a tutti gli items come [\"10%\"].\nSconto per articolo specifico:\napplicalo solo a quell articolo.\nSe decimale e 00: scrivi senza decimali (\"10%\").\nSe decimale non e 00: mantieni (\"10,50%\").\n\n=== REGOLA 6 — ORDINI MULTIPLI ===\nDestinazioni diverse O date diverse\n= oggetti SEPARATI nell array orders.\nNon unire articoli con date o destinazioni diverse.\n\n=== REGOLA 7 — CAMPI OBBLIGATORI ===\norder_number: solo se numero esplicito nel testo.\nMAI usare oggetto email come order_number.\nSe assente: \"\".\ncond_pagamento: cerca bb, bonifico, rimessa,\ncontrassegno, giorni pagamento nel testo.\nSe assente: \"\".\n\n=== REGOLA 8 — NOTE ===\n\nInformazioni supplementari = note_ordine.\nRichieste speciali, note consegna, merce mancante.\nConversazioni thread precedenti:\nusa SOLO ultimo messaggio come ordine a meno che\nil thread contenga dati anagrafici necessari.\nSe nessuna nota: \"\".\n\n=== REGOLA 9 — CAMPI STRINGA SEMPRE OBBLIGATORI ===\nQuesti campi devono essere SEMPRE stringhe.\nMAI restituire null. Se valore non esiste: \"\".\nphone, fax, cond_pagamento, listino_sconto,\ndestination, note_ordine, um, item_code, net,\ncustomer_name, supplier_name, order_number,\nissue_date, delivery_date, piva_cliente, email,\nsupplier_code, desc.\n\n=== REGOLA 10 — DIVIETO ASSOLUTO ALLUCINAZIONE ===\nNON inventare MAI valori.\nSe campo non trovato: \"\".\nStringa vuota e SEMPRE meglio di dati sbagliati.\nsupplier_code sconosciuto: \"\" non inventare.\n\n=== REGOLA 11 — CATALOGO PARZIALE ===\nIncludi SOLO prodotti con quantita reale e positiva.\nQuantita trattino o vuota: ESCLUDI completamente.\n\n=== REGOLA 12 — ORDINI DESTINAZIONI MULTIPLE ===\nSe lista di destinatari diversi per stesso prodotto:\nCrea UN oggetto separato per ogni indirizzo distinto.\ndestination = indirizzo completo del destinatario.\nitems = prodotto con quantita per quella destinazione.\nSe piu pezzi vanno allo stesso indirizzo: sommali.\nnote_ordine = nomi destinatari finali e note consegna.\ncustomer_name = azienda che ha fatto l ordine.\n\n=== REGOLA 13 — TABELLA CON CONSEGNE MULTIPLE ===\nAlcuni ordini contengono una tabella dove lo stesso \nprodotto ha quantita diverse per date di consegna \ndiverse, organizzate in colonne separate come:\n\"N PZ CONSEGNE ENTRO IL 4/11\"\n\"N PZ CONSEGNE ENTRO IL 12/11\"\n\"N PZ CONSEGNE ENTRO IL 24/11\"\n\nIn questo caso DEVI creare un oggetto separato \nnell array orders per ogni colonna data.\n\nPer ogni colonna data:\n- delivery_date = la data in quella colonna\n- items = tutti i prodotti con la quantita \n  di quella specifica colonna\n- Escludi righe dove la quantita di quella \n  colonna e 0 o vuota\n- customer_name, supplier_name, destination \n  sono uguali per tutti gli ordini\n- La colonna TOTALE PEZZI non e un ordine,\n  ignorala completamente\n\nEsempio corretto da questa email:\nOrdine 1: delivery_date=04/11/2025, \n  items con quantita colonna 4/11\nOrdine 2: delivery_date=12/11/2025,\n  items con quantita colonna 12/11\nOrdine 3: delivery_date=24/11/2025,\n  items con quantita colonna 24/11\n\n=== REGOLA 14 — FATTURAZIONE UNICA CON SPEDIZIONI MULTIPLE E SCONTI COMBINATI ===\nSe l'email contiene un ordine testuale con FATTURAZIONE a un'azienda principale ma SPEDIZIONI a indirizzi/persone diverse (es. regali natalizi a dipendenti):\n- Crea UN oggetto separato nell'array \"orders\" per OGNI singolo destinatario o spedizione.\n- customer_name = l'azienda a cui FATTURARE (es. VIRTUOUS S.R.L.). UGUALE per tutti gli ordini.\n- piva_cliente = P.IVA dell'azienda che fattura. UGUALE per tutti gli ordini.\n- destination = NOME COGNOME + INDIRIZZO COMPLETO + TELEFONO della singola persona destinataria indicata nel testo.\n- items = Inserisci SOLO la quantità e il prodotto destinato a quella specifica persona.\n- discount = Se ci sono sconti generali scritti nel testo dell'email (es. \"Sconto 5%\" e \"Sconto 3% pagamento anticipato\"), inseriscili TUTTI nell'array: [\"5%\", \"3%\"].\n- note_ordine = Inserisci qui eventuali costi aggiuntivi menzionati (es. \"Spese di spedizione 98€\").\n\n=== REGOLA 15 — COMPOSIZIONI SU MISURA E FLUSSI MULTIPLI (EMAIL) ===\n\nQuando l'ordine è scritto nel corpo testuale dell'email e contiene richieste complesse, applica queste 3 regole assolute:\n\n1. COMPOSIZIONI SU MISURA (CESTI CUSTOM): \nSe vedi un articolo principale (es. \"VARIAZIONE DOLCE PIEMONTE\", \"Confezione VEGAN\", \"Confezione GLUTEN FREE\") seguito da un elenco descrittivo di prodotti sfusi che lo compongono (es. scatole, vino, torrone, pasta, voci di \"manodopera\"):\n- Estrai SOLO il cesto/articolo principale come singolo oggetto in \"items\".\n- IGNORA COMPLETAMENTE e NON estrarre i singoli prodotti sfusi sottostanti. Non sono articoli da ordinare singolarmente.\n\n2. FLUSSI DI SPEDIZIONE MULTIPLI: \nSe l'email divide chiaramente la merce in blocchi di spedizione separati (es. \"IMPEGNO CON MECTRANS\" e \"DESTINAZIONI DIVERSE\"):\n- Crea un nuovo oggetto separato all'interno dell'array \"orders\" per ogni blocco.\n- Ogni blocco avrà lo stesso \"customer_name\", ma conterrà solo gli \"items\" di quella specifica sezione. \n- Inserisci le indicazioni di spedizione nel campo \"note_ordine\" (es. \"Spedizione Mectrans\" oppure \"Destinazioni Diverse\").\n\n3. ARTICOLI ESCLUSI (\"NON ORDINARE\"):\nSe accanto a un prodotto c'è scritto esplicitamente \"non ordinare\", \"da non ordinare\", \"non ordiniamo\" o \"chiedere campione\", ignoralo completamente. NON inserirlo nell'array \"items\".\n\nREGOLA CAMPI COMUNI DA EMAIL:\n- Condizioni pagamento nell email (es. \"bb 60 gg\") \n  vanno in cond_pagamento\n- Settimana consegna dall email (es. \"settimana 49\")\n  va in delivery_date convertita in data reale\n  (settimana 49 del 2025 = prima settimana di \n  dicembre 2025 → 01/12/2025)\n\n=== REGOLA SPECIALE — EMAIL CON RIEPILOGO E DETTAGLIO ===\n\nAlcune email contengono DUE sezioni:\n1. Un RIEPILOGO in alto con totali (es. \"22 Delizie da Re\",\n   \"2 Delizie da Re\", \"6 Tradizione Italiana\")\n2. Un DETTAGLIO più in basso con gli indirizzi singoli\n   (es. \"1 confezione DELIZIE DA RE da spedire a: KOPNINA...\")\n\nREGOLA CRITICA:\n- USA SEMPRE il dettaglio con gli indirizzi singoli\n- IGNORA il riepilogo in alto se esiste il dettaglio\n- Il dettaglio si riconosce quando vedi pattern come:\n  \"N confezione PRODOTTO da spedire a: NOME INDIRIZZO\"\n  \"N confezioni PRODOTTO da spedire a: NOME INDIRIZZO\"\n- Ogni \"da spedire a\" crea un ordine separato\n- Le 22 confezioni allo stesso indirizzo restano UN ordine\n- Prodotti diversi allo stesso indirizzo vanno in UN ordine\n  con items multipli\n\nPer questo tipo di email:\n- Crea un ordine per VIRTUOUS SRL con 22x DELIZIE DA RE\n- Crea ordini separati per ogni altro indirizzo\n- AMATO e TIGANI hanno lo stesso indirizzo fisico →\n  sommali in un ordine con 2 items\n- customer_name = VIRTUOUS S.R.L. per tutti gli ordini\n- piva_cliente = 16533931008\n- discount = [\"5%\"] per DELIZIE DA RE\n- discount = [\"5%\",\"3%\"] per TRADIZIONE ITALIANA\n  (sconto 3% pagamento anticipato si applica ai secondi)\n- delivery_date = 11/12/2025 per le 22 confezioni\n- note_ordine = spese spedizione 98 EUR + IVA\n\n=== REGOLA SPECIALE — ORDINE CON GRUPPI DI CONSEGNA ===\n\nAlcune email descrivono un ordine diviso in GRUPPI\ndi consegna con trasportatori diversi e costi diversi.\nPattern da riconoscere:\n\"Facciamo TRE impegni:\" oppure\n\"Consegna con X a Y destinazioni\"\noppure trattini che introducono gruppi separati.\n\nPer questo tipo di email:\nCrea UN ordine separato per ogni gruppo di consegna.\n\nGRUPPO 1 — destinazione singola esplicita:\n- destination = indirizzo completo scritto nel gruppo\n- qty = numero pezzi indicato (es. \"x 19 pezzi\")\n- note_ordine = trasportatore + costo spedizione\n  (es. \"Consegna con Mectrans GRATIS\")\n\nGRUPPO 2 — altra destinazione singola esplicita:\n- destination = indirizzo completo scritto nel gruppo\n- qty = numero pezzi indicato (es. \"x 6 pezzi\")\n- note_ordine = trasportatore + costo spedizione\n  (es. \"Consegna con Mectrans 50 EUR + IVA\")\n\nGRUPPO 3 — destinazioni multiple non elencate:\n- destination = \"DESTINAZIONI MULTIPLE - 27 destinatari\"\n- qty = numero totale pezzi (totale - altri gruppi)\n  es. 52 - 19 - 6 = 27 pezzi\n- note_ordine = \"Consegna con GLS 243 EUR + IVA.\n  27 destinazioni diverse. Inserire biglietto auguri.\"\n\nDATI COMUNI PER TUTTI I GRUPPI:\n- customer_name = mittente o azienda firmataria\n- supplier_code = cerca nel catalogo Villa Guelfa\n  oppure usa il codice indicato (es. Cod. 24205)\n- desc = nome prodotto (es. DOLCE PIEMONTE)\n- price = prezzo indicato (es. 17.99)\n- discount = tutti gli sconti applicati\n  \"SCONTO 15% + Sconto 3% pagamento anticipato\"\n  → [\"15%\",\"3%\"]\n- note_ordine per tutti: \"INSERIRE BIGLIETTO AUGURI\n  IN TUTTE LE CONFEZIONI\"\n\nCODICE PRODOTTO:\nSe il codice inizia con 2 e ha 4-5 cifre\n(es. Cod. 24205) → supplier_code = \"24205\"\nSe il codice non rispetta questa regola: lascia \"\"\n\nCALCOLO QTY GRUPPO 3:\nSe non è esplicitamente scritto, calcola:\nqty gruppo 3 = totale confezioni - somma altri gruppi\nes. 52 - 19 - 6 = 27\n\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        -2736,
+        640
+      ],
+      "id": "96b94da6-75b5-46ec-9956-d9f3b6dede4c",
+      "name": "Gemini: Extract Email Text Order"
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\n\nfor (const item of $input.all()) {\n  const raw = item.json;\n  \n  // Handle different input structures\n  let orders = [];\n  \n  if (raw?.output?.orders) {\n    orders = raw.output.orders;\n  } else if (raw?.orders) {\n    orders = raw.orders;\n  } else if (raw?.customer_name || raw?.items) {\n    orders = [raw];\n  } else {\n    continue;\n  }\n\n  for (const order of orders) {\n    if (\n      !order.customer_name &&\n      !order.order_number &&\n      (!order.items || order.items.length === 0)\n    ) {\n      continue;\n    }\n    results.push({ json: order });\n  }\n}\n\nif (results.length === 0) {\n  return [{ json: {\n    error: true,\n    message: \"Nessun ordine valido trovato\"\n  }}];\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1776,
+        640
+      ],
+      "id": "10e1881e-20e4-48ae-8cfd-7fbd14e87eb2",
+      "name": "Format Email Output"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $input.item.json;\nconst data = raw.orders ? raw.orders[0] : raw;\n// Convert any numeric 0 fields to empty strings\n['phone','fax','listino_sconto','cond_pagamento',\n 'note_ordine','destination','email'].forEach(field => {\n  if (data[field] === 0 || data[field] === null) {\n    data[field] = '';\n  }\n});\n\n// ── BRANDING ───────────────────────────────────────────\nconst supplierName = data.supplier_name || 'VILLA GUELFA S.R.L.';\nconst supplierPiva = supplierName.toUpperCase().includes('DRINK INTERNATIONAL') \n  ? 'IT00926410010' \n  : '02537910040';\n\n// ── FILENAME ───────────────────────────────────────────\nconst rawCustomer = data.customer_name || 'Ordine_Cliente';\nconst cleanCustomer = rawCustomer\n  .replace(/[^a-zA-Z0-9]/g, '_')\n  .replace(/_+/g, '_')\n  .toUpperCase();\nconst deliverySlug = (data.delivery_date || '')\n  .replace(/\\//g, '-');\nconst safeFilename = deliverySlug \n  ? `${cleanCustomer}_${deliverySlug}.pdf`\n  : `${cleanCustomer}.pdf`;\n\n// ── TOTALS & ROWS ──────────────────────────────────────\nlet totalQty = 0;\nlet totalImporto = 0;\nlet itemsHtml = '';\n\nconst itemsList = data.items || [];\n\nif (itemsList.length === 0) {\n  itemsHtml = `\n    <tr>\n      <td colspan=\"9\" style=\"text-align:center; padding:20px; \n        background-color:#FFF2CC; color:red; font-weight:bold;\">\n        ⚠️ Nessun articolo trovato — verificare manualmente.\n      </td>\n    </tr>`;\n} else {\n  itemsList.forEach((item, index) => {\n    const qty = parseFloat(item.qty) || 0;\n    const price = parseFloat(\n      String(item.price || 0).replace(',', '.')\n    ) || 0;\n    \n    let net = qty * price;\n\n    // Handle discount as array or string\n    const discounts = Array.isArray(item.discount)\n      ? item.discount\n      : item.discount\n        ? String(item.discount).split('+')\n        : [];\n\n    for (const d of discounts) {\n      const pct = parseFloat(\n        String(d).replace('%', '').replace(',', '.')\n      );\n      if (!isNaN(pct) && pct > 0) {\n        net = net * (1 - pct / 100);\n      }\n    }\n\n    totalQty += qty;\n    totalImporto += net;\n\n    // Format discount for display\n    const discountDisplay = Array.isArray(item.discount)\n      ? item.discount.join('+')\n      : (item.discount || '');\n\n    itemsHtml += `\n      <tr>\n        <td class=\"c-blue center bold\">${index + 1}</td>\n        <td class=\"c-blue center\">${item.supplier_code || ''}</td>\n        <td class=\"c-blue center\">${item.item_code || ''}</td>\n        <td class=\"c-yellow left\">${item.desc || ''}</td>\n        <td class=\"c-yellow center\">${item.um || 'PZ'}</td>\n        <td class=\"c-yellow center bold\">${qty}</td>\n        <td class=\"c-yellow right\">\n          ${price > 0 ? '€ ' + price.toFixed(2) : '€ 0.00'}\n        </td>\n        <td class=\"c-yellow center\">${discountDisplay}</td>\n        <td class=\"c-blue right\">\n          ${net > 0 ? '€ ' + net.toFixed(2) : '€ 0.00'}\n        </td>\n      </tr>`;\n  });\n}\n\n// ── NOTES BOX ──────────────────────────────────────────\nconst notesHtml = data.note_ordine\n  ? `<div class=\"notes-box\">\n      <span class=\"notes-title\">📋 NOTE / COMUNICAZIONI EMAIL:</span><br>\n      ${data.note_ordine}\n    </div>`\n  : '';\n\n// ── HTML TEMPLATE ──────────────────────────────────────\nconst html = `<!DOCTYPE html>\n<html>\n<head>\n  <meta charset=\"UTF-8\">\n  <style>\n    @page { \n      size: A4 landscape; \n      margin: 8mm; \n    }\n    body { \n      font-family: Arial, sans-serif; \n      font-size: 8.5pt; \n      margin: 0; \n      padding: 0; \n      color: #000; \n      background: #fff;\n    }\n    .header-banner { \n      background-color: #1F3864; \n      color: white; \n      text-align: center; \n      padding: 8px; \n      font-size: 15pt; \n      font-weight: bold; \n      letter-spacing: 1px; \n    }\n    .sub-banner { \n      background-color: #2E5CA8; \n      color: white; \n      text-align: center; \n      padding: 3px; \n      font-size: 8pt; \n      margin-bottom: 10px; \n    }\n    table { \n      width: 100%; \n      border-collapse: collapse; \n      margin-bottom: 6px; \n    }\n    td { \n      padding: 4px 6px; \n      vertical-align: middle; \n      border: 1px solid #fff; \n    }\n    .label { \n      text-align: right; \n      font-weight: bold; \n      color: #1F3864; \n      width: 15%; \n      padding-right: 6px; \n      background: #fff;\n      border: none;\n    }\n    .c-yellow { \n      background-color: #FFF2CC; \n      border: 1px solid #E6C800 !important; \n    }\n    .c-blue { \n      background-color: #DDEEFF; \n      border: 1px solid #9DC3E6 !important; \n      color: #1F3864; \n    }\n    .c-white { \n      background-color: #fff; \n      border: 1px solid #ccc !important; \n    }\n    .center { text-align: center; }\n    .left { text-align: left; }\n    .right { text-align: right; }\n    .bold { font-weight: bold; }\n    .items-table th { \n      background-color: #1F3864; \n      color: white; \n      font-weight: bold; \n      padding: 6px; \n      text-align: center; \n      border: 1px solid #fff; \n    }\n    .items-table td { \n      border: 1px solid #D0D8E8; \n      padding: 5px; \n    }\n    .totals-row td { \n      font-size: 10pt; \n      font-weight: bold; \n    }\n    .notes-box { \n      border: 2px solid #FF0000; \n      background-color: #FFF2CC; \n      padding: 8px; \n      margin-top: 20px; \n      font-size: 8pt; \n    }\n    .notes-title { \n      font-weight: bold; \n      color: #FF0000; \n    }\n  </style>\n</head>\n<body>\n\n  <div class=\"header-banner\">\n    ${supplierName.toUpperCase()} — ORDINE FORNITORE\n  </div>\n  <div class=\"sub-banner\">\n    Generato Automaticamente (Estrazione AI)\n  </div>\n\n  <!-- INFO TOP -->\n  <table>\n    <tr>\n      <td class=\"label\">N. DOCUMENTO:</td>\n      <td class=\"c-yellow\" style=\"width:34%\">\n        <b>${data.order_number || ''}</b>\n      </td>\n      <td class=\"label\">NOME CLIENTE:</td>\n      <td class=\"c-yellow\" style=\"width:34%; font-size:10pt;\">\n        <b>${data.customer_name || ''}</b>\n      </td>\n    </tr>\n    <tr>\n      <td class=\"label\">DATA EMISSIONE:</td>\n      <td class=\"c-yellow\">${data.issue_date || ''}</td>\n      <td class=\"label\">P.IVA:</td>\n      <td class=\"c-blue\">${data.piva_cliente || ''}</td>\n    </tr>\n    <tr>\n      <td class=\"label\">DATA CONSEGNA:</td>\n      <td class=\"c-yellow\" style=\"color:red; font-weight:bold;\">\n        ${data.delivery_date || 'NON SPECIFICATA'}\n      </td>\n      <td class=\"label\">CODE:</td>\n      <td class=\"c-blue\"></td>\n    </tr>\n    <tr>\n      <td class=\"label\">DESTINAZIONE:</td>\n      <td class=\"c-yellow\">${data.destination || ''}</td>\n      <td class=\"label\">INDIRIZZO:</td>\n      <td class=\"c-blue\"></td>\n    </tr>\n    <tr>\n      <td class=\"label\">NOTE ORDINE:</td>\n      <td class=\"c-yellow\">${data.note_ordine || ''}</td>\n      <td class=\"label\">TELEFONO:</td>\n      <td class=\"c-blue\">${data.phone || ''}</td>\n    </tr>\n    <tr>\n      <td class=\"label\"></td>\n      <td></td>\n      <td class=\"label\">EMAIL:</td>\n      <td class=\"c-blue\">${data.email || ''}</td>\n    </tr>\n    <tr>\n      <td class=\"label\"></td>\n      <td></td>\n      <td class=\"label\">FAX:</td>\n      <td class=\"c-blue\">${data.fax || ''}</td>\n    </tr>\n  </table>\n\n  <!-- PAYMENT & SUPPLIER -->\n  <table>\n    <tr>\n      <td class=\"label\">COND. PAGAMENTO:</td>\n      <td class=\"c-blue\" style=\"width:34%\">\n        ${data.cond_pagamento || ''}\n      </td>\n      <td class=\"label\">LISTINO / SCONTO:</td>\n      <td class=\"c-blue\" style=\"width:34%\">\n        ${data.listino_sconto || ''}\n      </td>\n    </tr>\n    <tr>\n      <td class=\"label\"></td>\n      <td></td>\n      <td class=\"label\">FORNITORE:</td>\n      <td class=\"c-white\">${supplierName}</td>\n    </tr>\n    <tr>\n      <td class=\"label\"></td>\n      <td></td>\n      <td class=\"label\">P.IVA FORN.:</td>\n      <td class=\"c-white\">${supplierPiva}</td>\n    </tr>\n  </table>\n\n  <!-- TOTALS -->\n  <table>\n    <tr class=\"totals-row\">\n      <td class=\"label\">TOTALE QUANTITÀ:</td>\n      <td class=\"c-blue center\" style=\"width:34%\">\n        ${totalQty}\n      </td>\n      <td class=\"label\">TOTALE IMPORTO:</td>\n      <td class=\"c-blue center\" style=\"width:34%\">\n        € ${totalImporto.toFixed(2)}\n      </td>\n    </tr>\n  </table>\n\n  <!-- ITEMS TABLE -->\n  <table class=\"items-table\">\n    <thead>\n      <tr>\n        <th style=\"width:3%\">#</th>\n        <th style=\"width:13%\">CODICE FORNITORE</th>\n        <th style=\"width:13%\">CODICE ARTICOLO</th>\n        <th style=\"width:33%\">DESCRIZIONE</th>\n        <th style=\"width:4%\">U.M.</th>\n        <th style=\"width:6%\">QTÀ</th>\n        <th style=\"width:10%\">PREZZO LORDO €</th>\n        <th style=\"width:8%\">SCONTO %</th>\n        <th style=\"width:10%\">IMPORTO NETTO €</th>\n      </tr>\n    </thead>\n    <tbody>\n      ${itemsHtml}\n    </tbody>\n  </table>\n\n  ${notesHtml}\n\n</body>\n</html>`;\n\n// ── OUTPUT ─────────────────────────────────────────────\nconst binaryData = Buffer.from(html, 'utf8').toString('base64');\n\nreturn {\n  json: {\n    orderData: data,\n    pdfFileName: safeFilename\n  },\n  binary: {\n    \"index.html\": {\n      data: binaryData,\n      mimeType: \"text/html\",\n      fileName: \"index.html\"\n    }\n  }\n};"
+      },
+      "id": "feb8cf29-6cf2-4ed9-ba2e-eb402b7454e9",
+      "name": "Build HTML Document for our excel template",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1696,
+        -192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawItems = $input.all();\nconst allRows = rawItems.map(item => item.json.row || []);\n\nconst ordersOutput = [];\n\n// 1. SPLIT THE GIANT LIST INTO SEPARATE FILES\n// We watch for the title banner to know when a new Excel file begins\nconst fileChunks = [];\nlet currentChunk = [];\n\nfor (const row of allRows) {\n    // If Row 0 (Column A) contains our title banner, start a new chunk!\n    if (row && row[0] && typeof row[0] === 'string' && row[0].includes(\"ORDINE FORNITORE\")) {\n        if (currentChunk.length > 0) {\n            fileChunks.push(currentChunk);\n        }\n        currentChunk = [];\n    }\n    currentChunk.push(row);\n}\nif (currentChunk.length > 0) {\n    fileChunks.push(currentChunk);\n}\n\n// Helper function to fix Excel dates\nfunction fixDate(excelDate) {\n    if (!excelDate) return \"-\";\n    if (!isNaN(excelDate) && typeof excelDate === 'number') {\n        const date = new Date(Math.round((excelDate - 25569) * 86400 * 1000));\n        const d = String(date.getDate()).padStart(2, '0');\n        const m = String(date.getMonth() + 1).padStart(2, '0');\n        const y = date.getFullYear();\n        return `${d}/${m}/${y}`;\n    }\n    return excelDate; \n}\n\n// 2. PROCESS EACH EXCEL FILE INDIVIDUALLY\nfor (const rows of fileChunks) {\n    \n    function getCell(rowIndex, colIndex) {\n        if (!rows[rowIndex] || rows[rowIndex][colIndex] === null) return \"\";\n        return rows[rowIndex][colIndex];\n    }\n\n    const customer_name = getCell(3, 7);\n    const piva_cliente = getCell(4, 7);\n    const destination = getCell(6, 1);\n    const order_number = getCell(3, 1);\n    const issue_date = fixDate(getCell(4, 1));\n    const delivery_date = fixDate(getCell(5, 1));\n    const note_ordine = getCell(7, 1);\n    const phone = getCell(7, 7);\n    const email = getCell(8, 7);\n    const cond_pagamento = getCell(11, 1);\n    const listino_sconto = getCell(11, 7);\n\n    const items = [];\n\n    for (let i = 18; i < rows.length; i++) {\n        const row = rows[i];\n        if (!row || row.length === 0) continue;\n\n        const qty = parseFloat(row[5]);\n\n        if (!isNaN(qty) && qty > 0) {\n            let rawDiscount = row[7];\n            let discountArr = [];\n            if (rawDiscount !== null && rawDiscount !== \"\") {\n                let strDisc = String(rawDiscount);\n                if (strDisc.includes('%')) {\n                    discountArr = [strDisc];\n                } else {\n                    let numDisc = parseFloat(strDisc);\n                    if (numDisc < 1 && numDisc > 0) {\n                        discountArr = [(numDisc * 100).toFixed(0) + \"%\"];\n                    } else {\n                        discountArr = [numDisc.toFixed(0) + \"%\"];\n                    }\n                }\n            }\n\n            items.push({\n                \"supplier_code\": row[1] !== null ? row[1] : \"\",\n                \"item_code\": row[2] !== null ? row[2] : \"\",\n                \"desc\": row[3] !== null ? row[3] : \"\",\n                \"um\": row[4] !== null ? row[4] : \"PZ\",\n                \"qty\": qty,\n                \"price\": row[6] !== null ? parseFloat(row[6]) : 0,\n                \"discount\": discountArr,\n                \"net\": row[8] !== null ? parseFloat(row[8]) : 0 \n            });\n        }\n    }\n\n    // Package this specific order and add it to our output list\n    ordersOutput.push({\n        json: {\n            orders: [{\n                \"customer_name\": customer_name,\n                \"supplier_name\": \"DRINK INTERNATIONAL SPA\",\n                \"order_number\": order_number,\n                \"issue_date\": issue_date,\n                \"delivery_date\": delivery_date,\n                \"destination\": destination,\n                \"note_ordine\": note_ordine,\n                \"phone\": phone,\n                \"email\": email,\n                \"fax\": \"\",\n                \"piva_cliente\": piva_cliente,\n                \"cond_pagamento\": cond_pagamento,\n                \"listino_sconto\": listino_sconto,\n                \"items\": items\n            }]\n        }\n    });\n}\n\n// 3. Output the fully separated orders\n// If there were 2 Excel files, this outputs 2 independent items to n8n!\nreturn ordersOutput;"
+      },
+      "id": "30408b02-3fd4-4661-afdf-a49327c6a585",
+      "name": "Group Rows into Separate Orders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2240,
+        -192
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "drinkinternational@iungomail.com",
+        "subject": "={{ $binary.data.fileName }}",
+        "message": "=",
+        "options": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {}
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -752,
+        480
+      ],
+      "id": "5c46698a-a70f-4e3c-a5d5-a6ff8991c0e1",
+      "name": "Send to drink-iungo",
+      "webhookId": "72516b59-0165-4b00-9b5d-2bdc55df9c6e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Z1pOLQzIMIo3NzIf",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "busetasdemir174@gmail.com",
+        "subject": "=✅ Ordini processati - {{ $now.setZone('Europe/Rome').toFormat('dd/MM/yyyy') }}",
+        "message": "=<div style=\"font-family: Arial, sans-serif; color: #333; max-width: 650px; margin: 0 auto; border: 1px solid #e0e0e0; padding: 30px; border-radius: 8px;\">\n    \n    <h2 style=\"color: #388e3c; border-bottom: 2px solid #388e3c; padding-bottom: 15px; margin-top: 0;\">✅ Rapporto Elaborazione Ordini</h2>\n    \n    <p style=\"font-size: 14px; margin-top: 20px;\">Gentile utente,</p>\n    <p style=\"font-size: 14px;\">Abbiamo ricevuto e processato correttamente i seguenti ordini:</p>\n    \n    <table style=\"width: 100%; border-collapse: collapse; margin-top: 25px; margin-bottom: 25px; border: 1px solid #e0e0e0;\">\n        <thead>\n            <tr style=\"background-color: #f9f9f9;\">\n                <th style=\"border: 1px solid #e0e0e0; padding: 12px; text-align: left; font-size: 14px; color: #000;\">Cliente</th>\n                <th style=\"border: 1px solid #e0e0e0; padding: 12px; text-align: center; width: 140px; font-size: 14px; color: #000;\">Link</th>\n            </tr>\n        </thead>\n        <tbody>\n            {{ ($('Aggregate').item.json.lista_file || []).map(file => `<tr><td style=\"border: 1px solid #e0e0e0; padding: 12px; font-size: 14px; font-weight: bold;\">${(file.name || 'Documento').replace('.pdf', '')}</td><td style=\"border: 1px solid #e0e0e0; padding: 12px; text-align: center;\"><a href=\"${file.webViewLink || '#'}\" style=\"background-color: #2e7d32; color: white; text-decoration: none; padding: 8px 16px; border-radius: 4px; font-size: 13px; font-weight: bold; display: inline-block;\">Visualizza</a></td></tr>`).join('') }}\n        </tbody>\n    </table>\n    \n    <div style=\"background-color: #e8f5e9; padding: 15px; border-radius: 5px; margin-bottom: 30px; border-left: 4px solid #388e3c; font-size: 14px;\">\n        📁 <strong>Archiviazione:</strong> I file sono stati salvati su Google Drive.\n    </div>\n    \n    <hr style=\"border: 0; border-top: 1px solid #eeeeee; margin: 20px 0;\">\n    \n    <p style=\"font-size: 12px; color: #888888; margin-bottom: 0;\">\n        Messaggio automatico generato il {{ $now.setZone('Europe/Rome').toFormat('dd/MM/yyyy, HH:mm:ss') }}.\n    </p>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -112,
+        304
+      ],
+      "id": "056d8024-9ada-4ba9-b606-a91fd8f3b02f",
+      "name": "Send a confirmation message to the personal mail",
+      "webhookId": "72516b59-0165-4b00-9b5d-2bdc55df9c6e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Z1pOLQzIMIo3NzIf",
+          "name": "Gmail OAuth2 API"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Build HTML Document": {
+      "main": [
+        [
+          {
+            "node": "RAILWAY-PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by File Type": {
+      "main": [
+        [
+          {
+            "node": "Check Template Type: If Our Template",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Template Type: If Our Template1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Excel Rows XLS1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gemini: Extract PDF Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Discard: Unsupported File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gotenberg: Convert DOCX to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Discard: Unsupported File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Gemini: Extract Email Text Order",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if Attachment Exists": {
+      "main": [
+        [
+          {
+            "node": "Separate Multiple Files",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Body-Only Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate": {
+      "main": [
+        [
+          {
+            "node": "Mark a message as read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAILWAY-PDF": {
+      "main": [
+        [
+          {
+            "node": "Format/Rename Output PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New Email with Attachment": {
+      "main": [
+        [
+          {
+            "node": "Check if Attachment Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload file": {
+      "main": [
+        [
+          {
+            "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark a message as read": {
+      "main": [
+        [
+          {
+            "node": "Send a confirmation message to the personal mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separate Multiple Files": {
+      "main": [
+        [
+          {
+            "node": "Iterate Each File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Iterate Each File": {
+      "main": [
+        [
+          {
+            "node": "Route by File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Body-Only Order": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Extract Email Text Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Discard: No Order Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Discard: Unsupported File": {
+      "main": [
+        []
+      ]
+    },
+    "Gotenberg: Convert DOCX to PDF": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Extract PDF Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Extract PDF Data": {
+      "main": [
+        [
+          {
+            "node": "Parse: If different orders in one file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format/Rename Output PDF": {
+      "main": [
+        [
+          {
+            "node": "Send to drink-iungo",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse: If different orders in one file": {
+      "main": [
+        [
+          {
+            "node": "Build HTML Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Template Type: If Our Template": {
+      "main": [
+        [
+          {
+            "node": "Read Excel Rows XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Excel Rows XLSX1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Template Type: If Our Template1": {
+      "main": [
+        [
+          {
+            "node": "Read Excel Rows XLS",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read Excel Rows XLS1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Excel Rows XLSX": {
+      "main": [
+        [
+          {
+            "node": "Group Rows into Separate Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Excel Rows XLSX1": {
+      "main": [
+        [
+          {
+            "node": "Clean/Prepare Excel Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Excel Rows XLS": {
+      "main": [
+        [
+          {
+            "node": "Group Rows into Separate Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Excel Rows XLS1": {
+      "main": [
+        [
+          {
+            "node": "Clean/Prepare Excel Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean/Prepare Excel Data": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Extract Excel Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Extract Excel Data": {
+      "main": [
+        [
+          {
+            "node": "Format Excel Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Excel Output": {
+      "main": [
+        [
+          {
+            "node": "Build HTML Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Extract Email Text Order": {
+      "main": [
+        [
+          {
+            "node": "Format Email Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Email Output": {
+      "main": [
+        [
+          {
+            "node": "Build HTML Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build HTML Document for our excel template": {
+      "main": [
+        [
+          {
+            "node": "RAILWAY-PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group Rows into Separate Orders": {
+      "main": [
+        [
+          {
+            "node": "Build HTML Document for our excel template",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send to drink-iungo": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "9759c933-6e44-40a6-a12c-d5bd8f0a5478",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "35e3418a0855954799c32f46dc0a860fafffbb87329e55b139738fd826f373b2"
+  },
+  "nodeGroups": [],
+  "id": "wxcZ6QofHOq13wuR",
+  "tags": []
+}
